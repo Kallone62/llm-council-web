@@ -1,0 +1,15 @@
+[project]
+name = "llm-council-karpathy-ui"
+version = "1.0.0"
+description = "Local web UI combining the Karpathy LLM Council experience with Amiable llm-council-core"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "fastapi==0.142.2",
+    "uvicorn[standard]==0.54.0",
+    "python-dotenv==1.2.4",
+    "httpx==0.28.1",
+    "pydantic==2.13.5",
+    "pyyaml==6.0.3",
+    "llm-council-core==0.53.0",
+]
