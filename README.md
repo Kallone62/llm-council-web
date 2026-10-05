@@ -72,7 +72,7 @@ The launcher will automatically:
 
 1. create a local `.env` if needed;
 2. run `uv sync` if the Python environment is missing;
-3. run `npm ci` if frontend dependencies are missing;
+3. run `npm install` if frontend dependencies are missing;
 4. start the backend on `http://localhost:8001`;
 5. start the frontend on `http://localhost:5173`;
 6. open the app in your browser.
@@ -96,7 +96,7 @@ CREATE_DESKTOP_SHORTCUT.bat
 ```bash
 uv sync
 cd frontend
-npm ci
+npm install
 cd ..
 ```
 
