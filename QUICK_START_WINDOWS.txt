@@ -1,0 +1,24 @@
+LLM COUNCIL - WINDOWS QUICK START
+=================================
+
+FIRST TIME ON THIS PC
+1. Install Node.js LTS.
+2. Install uv.
+3. Double-click START_LLM_COUNCIL.bat.
+4. Wait for the browser to open at http://localhost:5173
+5. Open Settings in the left sidebar.
+6. Add your OpenRouter API key.
+7. Choose a model profile or custom council models and Save settings.
+
+NORMAL USE AFTER SETUP
+- Double-click START_LLM_COUNCIL.bat
+- When finished, double-click STOP_LLM_COUNCIL.bat
+
+OPTIONAL
+- Double-click CREATE_DESKTOP_SHORTCUT.bat once.
+- Then start the app from the "LLM Council" desktop shortcut.
+
+NOTES
+- .env stores your OpenRouter key locally and is ignored by git.
+- llm_council.yaml stores the council/model settings.
+- No automatic upstream updates are performed.
