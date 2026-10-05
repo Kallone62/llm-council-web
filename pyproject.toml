@@ -13,3 +13,6 @@ dependencies = [
     "pyyaml==6.0.3",
     "llm-council-core==0.53.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
