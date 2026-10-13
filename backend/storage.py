@@ -197,3 +197,12 @@ def delete_conversation(conversation_id: str) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def update_conversation_memory(conversation_id: str, memory: Dict[str, Any]) -> None:
+    """Save only the bounded AI summary, retaining every original message."""
+    conversation = get_conversation(conversation_id)
+    if conversation is None:
+        raise ValueError(f"Conversation {conversation_id} not found")
+    conversation["context_memory"] = memory
+    save_conversation(conversation)
