@@ -176,12 +176,11 @@ export default function ChatInterface({
         <div ref={messagesEndRef} />
       </div>
 
-      {conversation.messages.length === 0 && (
-        <form className="input-form" onSubmit={handleSubmit}>
+      <form className="input-form" onSubmit={handleSubmit}>
           <div className="message-entry">
             <textarea
               className="message-input"
-              placeholder="Ask your question... (Shift+Enter for new line, Enter to send)"
+              placeholder="Ask a question or continue this conversation... (Shift+Enter for new line)"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -220,7 +219,6 @@ export default function ChatInterface({
             Send
           </button>
         </form>
-      )}
     </div>
   );
 }

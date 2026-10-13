@@ -115,6 +115,22 @@ npm run dev
 
 Open `http://localhost:5173`.
 
+## Follow-up conversations
+
+After the first Council result, the message composer stays available in the
+same chat. Follow-up questions trigger a new full Amiable Council round using
+the latest user question plus a bounded amount of prior conversation context:
+up to three **completed** question / Chairman-final-answer exchanges,
+maximum 6,000 characters of prior context. The independent Stage 1 answers,
+Stage 2 reviews and usage metadata are still stored in full, but are **not**
+re-sent as history on later rounds.
+
+- New chats and first questions retain the original single-question behavior.
+- Prior unanswered or failed rounds are not presented as Council decisions.
+- Every follow-up invokes the configured models again and incurs new OpenRouter
+  usage; keeping history short limits additional token cost.
+- The full, original user text is saved and shown, not a history-expanded prompt.
+
 ## Settings
 
 The Settings screen writes the active Amiable config at:
