@@ -117,15 +117,13 @@ def test_sse_is_only_an_envelope_around_full_engine_result(tmp_path, monkeypatch
         if line.startswith("data: "):
             events.append(json.loads(line[6:]))
 
+    # The fake engine emits no native stage boundaries. Never invent them.
     assert [event["type"] for event in events] == [
-        "stage1_start",
         "stage1_complete",
-        "stage2_start",
         "stage2_complete",
-        "stage3_start",
         "stage3_complete",
-        "title_complete",
         "complete",
+        "title_complete",
     ]
     stage2_event = next(event for event in events if event["type"] == "stage2_complete")
     assert stage2_event["data"][0]["parsed_ranking"]["ranking"] == ["Response A"]
