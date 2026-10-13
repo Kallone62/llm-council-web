@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, field_validator
 # before the Amiable package initializes its global configuration.
 from . import config as app_config
 from . import storage
+from .conversation_context import build_council_query
 from . import engine_runtime
 
 from llm_council.council import run_full_council
@@ -362,6 +363,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
+    council_query = build_council_query(conversation["messages"], request.content)
     storage.add_user_message(conversation_id, request.content)
 
     if is_first_message:
@@ -370,7 +372,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
 
     # Direct Amiable engine call. No Karpathy-side council implementation.
     stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
-        request.content,
+        council_query,
         verdict_type=_verdict_type(request),
         include_dissent=request.include_dissent,
         per_model_timeout=_stage_timeout_seconds(),
@@ -409,6 +411,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
+    council_query = build_council_query(conversation["messages"], request.content)
 
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue()
@@ -429,7 +432,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     title_task = asyncio.create_task(generate_conversation_title(request.content))
 
                 stage1, stage2, stage3, metadata = await run_full_council(
-                    request.content,
+                    council_query,
                     verdict_type=_verdict_type(request),
                     include_dissent=request.include_dissent,
                     per_model_timeout=_stage_timeout_seconds(),
