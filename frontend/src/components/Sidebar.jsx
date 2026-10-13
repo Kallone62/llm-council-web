@@ -60,6 +60,7 @@ export default function Sidebar({
                 {deletingConversationId === conv.id ? '…' : '×'}
               </button>
             </div>
+          ))
         )}
       </div>
 
