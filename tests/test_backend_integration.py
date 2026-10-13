@@ -247,3 +247,37 @@ def test_sse_persists_actual_native_stage_progress(tmp_path, monkeypatch):
     stored = storage.get_conversation(conversation["id"])
     saved = stored["messages"][-1]["metadata"]["ui_runtime_progress"]
     assert saved == progress
+
+
+def test_delete_conversation_removes_only_selected_json(tmp_path, monkeypatch):
+    """No model calls: deletion is local, persistent, and narrowly scoped."""
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+    client = TestClient(main.app)
+    first = client.post("/api/conversations", json={}).json()
+    second = client.post("/api/conversations", json={}).json()
+
+    storage.add_user_message(first["id"], "Delete me")
+    storage.add_user_message(second["id"], "Keep me")
+    first_file = tmp_path / "conversations" / f'{first["id"]}.json'
+    second_file = tmp_path / "conversations" / f'{second["id"]}.json'
+    assert first_file.exists() and second_file.exists()
+
+    response = client.delete(f'/api/conversations/{first["id"]}')
+    assert response.status_code == 204
+    assert response.content == b""
+    assert not first_file.exists()
+    assert second_file.exists()
+    assert client.get(f'/api/conversations/{first["id"]}').status_code == 404
+    assert client.get(f'/api/conversations/{second["id"]}').status_code == 200
+    assert [c["id"] for c in client.get("/api/conversations").json()] == [second["id"]]
+    assert client.delete(f'/api/conversations/{first["id"]}').status_code == 404
+
+
+def test_delete_rejects_invalid_id_without_touching_other_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+    client = TestClient(main.app)
+    created = client.post("/api/conversations", json={}).json()
+    response = client.delete("/api/conversations/not-a-uuid")
+    assert response.status_code == 404
+    assert storage.delete_conversation("../outside") is False
+    assert (tmp_path / "conversations" / f'{created["id"]}.json').exists()
