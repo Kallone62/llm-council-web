@@ -1,141 +1,241 @@
-"""Offline regression tests for true follow-up conversations.
+"""Offline tests for faithful rolling AI memory and its Amiable boundary."""
 
-No OpenRouter calls. These tests pin the stateless Amiable prompt boundary and
-ensure saved user messages remain separate from bounded engine context.
-"""
+import asyncio
+import json
 
+import pytest
 from fastapi.testclient import TestClient
 
-from backend import main, storage
-from backend.conversation_context import (
-    MAX_HISTORY_CHARS,
-    MAX_HISTORY_TURNS,
-    build_council_query,
-)
+from backend import main, storage, conversation_context as context
 
 
-def _council_result(answer: str):
+def _result(answer="Council recommends Python"):
     return (
-        [{"model": "model/a", "response": "Raw Stage 1 internal details"}],
-        [{"model": "model/b", "ranking": "Raw Stage 2 private review"}],
-        {"model": "model/chairman", "response": answer},
-        {"aggregate_rankings": [], "usage": {"total": {"cost_usd": 0}}},
+        [{"model": "provider/a", "response": "Raw Stage 1 internal"}],
+        [{"model": "provider/b", "ranking": "Raw Stage 2 internal"}],
+        {"model": "provider/chairman", "response": answer},
+        {"aggregate_rankings": [], "usage": {"total": {"total_tokens": 12}}},
     )
 
 
-def test_first_question_is_identical_with_no_history():
-    query = "Explain the trade-offs."
-    assert build_council_query([], query) == query
-    # Neither pending questions nor incomplete council attempts count as prior decisions.
-    messages = [
-        {"role": "user", "content": "A question that never got an answer"},
-        {"role": "assistant", "stage3": None},
-    ]
-    assert build_council_query(messages, query) == query
-
-
-def test_context_excludes_unanswered_questions_and_raw_council_stages():
-    messages = [
-        {"role": "user", "content": "First actual question"},
-        {"role": "assistant", "stage1": [{"response": "private Stage 1"}],
-         "stage2": [{"ranking": "private Stage 2"}],
-         "stage3": {"response": "Completed chairman response"}},
-        {"role": "user", "content": "This failed without a final answer"},
-    ]
-    query = build_council_query(messages, "Follow up")
-    assert "First actual question" in query
-    assert "Completed chairman response" in query
-    assert "This failed without a final answer" not in query
-    assert "private Stage 1" not in query
-    assert "private Stage 2" not in query
-    assert query.endswith("Follow up")
-
-
-def test_context_is_bounded_to_recent_successful_turns():
+def _conversation(exchanges):
     messages = []
-    for index in range(7):
-        messages.extend([
-            {"role": "user", "content": f"question_{index} " + "Q" * 3000},
-            {"role": "assistant", "stage3": {"response": f"answer_{index} " + "A" * 5000}},
-        ])
-    query = build_council_query(messages, "new latest")
-    assert "question_6" in query and "answer_6" in query
-    assert "question_0" not in query and "answer_0" not in query
-    assert "Raw Stage" not in query
-    assert query.endswith("new latest")
-    # The context segment is budgeted independently of the new user question.
-    assert len(query.split("Current user question for this Council round:", 1)[0]) <= MAX_HISTORY_CHARS + 150
-    assert query.count("Previous user question:") <= MAX_HISTORY_TURNS
+    for question, answer in exchanges:
+        messages.append({"role": "user", "content": question})
+        messages.append({
+            "role": "assistant",
+            "stage1": [{"response": "Private Stage 1 critique"}],
+            "stage2": [{"ranking": "Private Stage 2 score"}],
+            "stage3": {"response": answer},
+        })
+    return {"messages": messages}
 
 
-def test_rest_followup_uses_history_without_altering_saved_user_text(tmp_path, monkeypatch):
+def test_first_question_is_unchanged_and_no_extra_llm(monkeypatch):
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("No summary model should be called")
+    monkeypatch.setattr(context, "query_model", forbidden)
+    query, memory = asyncio.run(context.prepare_council_query({"messages": []}, "First question"))
+    assert query == "First question"
+    assert memory is None
+
+
+def test_short_history_is_full_not_character_truncated(monkeypatch):
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Small history should be passed directly")
+    monkeypatch.setattr(context, "query_model", forbidden)
+    long_but_small = "Important ending: revert if safety checks fail."
+    conversation = _conversation([("Consider rollout?", "A" * 2000 + long_but_small)])
+    query, memory = asyncio.run(context.prepare_council_query(conversation, "Why?"))
+    assert "A" * 2000 + long_but_small in query
+    assert query.endswith("Why?")
+    assert memory is None
+    assert "Private Stage 1 critique" not in query
+    assert "Private Stage 2 score" not in query
+
+
+def test_unanswered_or_failed_round_does_not_become_decision():
+    messages = [
+        {"role": "user", "content": "Unanswered old question"},
+        {"role": "assistant", "stage3": None},
+        {"role": "user", "content": "Completed question"},
+        {"role": "assistant", "stage3": {"response": "Actual final"}},
+        {"role": "user", "content": "Another unanswered question"},
+    ]
+    query, _ = asyncio.run(context.prepare_council_query({"messages": messages}, "Next"))
+    assert "Unanswered old question" not in query
+    assert "Another unanswered question" not in query
+    assert "Completed question" in query and "Actual final" in query
+
+
+def test_large_history_is_summarized_by_ai_without_cutting_source(monkeypatch):
+    calls = []
+    progress = []
+    original_answer = "A" * 6300 + "CRITICAL FINAL DECISION: DO NOT SHIP."
+
+    async def fake_model(model, messages, **kwargs):
+        calls.append((model, messages, kwargs))
+        return {"content": "Do not ship; the final decision is to wait for safety review."}
+
+    async def on_progress(state):
+        progress.append(state)
+
+    monkeypatch.setattr(context, "query_model", fake_model)
+    conversation = _conversation([("Should we ship?", original_answer)])
+    query, memory = asyncio.run(context.prepare_council_query(
+        conversation, "And tomorrow?", progress_callback=on_progress
+    ))
+
+    assert len(calls) == 1
+    assert calls[0][0] == context.SUMMARY_MODEL
+    assert calls[0][2]["disable_tools"] is True
+    sent = json.loads(calls[0][1][1]["content"])
+    assert sent["completed_exchanges_since_memory"][0]["chairman_final_answer"] == original_answer
+    assert "CRITICAL FINAL DECISION" in sent["completed_exchanges_since_memory"][0]["chairman_final_answer"]
+    assert "Do not ship" in query
+    assert "A" * 100 not in query
+    assert query.endswith("And tomorrow?")
+    assert memory["covered_turns"] == 1
+    assert progress == ["started", "completed"]
+
+
+def test_cached_ai_memory_reused_and_then_refreshed_incrementally(monkeypatch):
+    calls = []
+    async def fake_model(model, messages, **kwargs):
+        payload = json.loads(messages[1]["content"])
+        calls.append(payload)
+        return {"content": "Summary round " + str(len(calls))}
+
+    monkeypatch.setattr(context, "query_model", fake_model)
+    conversation = _conversation([("Q1", "Long " * 1500)])
+    _, memory = asyncio.run(context.prepare_council_query(conversation, "Q2"))
+    assert len(calls) == 1
+    conversation["context_memory"] = memory
+    query, no_update = asyncio.run(context.prepare_council_query(conversation, "Q2 again"))
+    assert no_update is None
+    assert len(calls) == 1
+    assert "Summary round 1" in query
+    conversation["messages"].extend(_conversation([("Q2", "Another " * 1500)])["messages"])
+    query, new_memory = asyncio.run(context.prepare_council_query(conversation, "Q3"))
+    assert len(calls) == 2
+    assert calls[1]["previous_memory"] == "Summary round 1"
+    assert len(calls[1]["completed_exchanges_since_memory"]) == 1
+    assert calls[1]["completed_exchanges_since_memory"][0]["user_question"] == "Q2"
+    assert new_memory["covered_turns"] == 2
+    assert "Summary round 2" in query
+
+
+def test_summary_failure_refuses_to_silently_discard_history(monkeypatch):
+    progress = []
+    async def fake_model(*_args, **_kwargs):
+        return None
+
+    async def on_progress(state):
+        progress.append(state)
+
+    monkeypatch.setattr(context, "query_model", fake_model)
+    conversation = _conversation([("A", "Z" * 6800)])
+    with pytest.raises(context.ContextSummaryError):
+        asyncio.run(context.prepare_council_query(
+            conversation, "Next", progress_callback=on_progress
+        ))
+    assert progress == ["started", "failed"]
+
+
+def test_api_followups_use_same_context_and_keep_original_transcript(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
-    prompts = []
-    title_requests = []
+    council_queries = []
+    summary_calls = []
 
-    async def fake_council(query, **kwargs):
-        prompts.append((query, kwargs))
-        return _council_result(f"Final answer #{len(prompts)}")
+    async def fake_council(query, **_kwargs):
+        council_queries.append(query)
+        return _result("Answer #" + str(len(council_queries)) + (" X" * 3600 if len(council_queries) == 1 else ""))
 
-    async def fake_title(question):
-        title_requests.append(question)
-        return "Multi-turn test"
+    async def fake_title(_query):
+        return "AI memory test"
+
+    async def fake_summary(_model, _messages, **_kwargs):
+        summary_calls.append(True)
+        return {"content": "Council previously concluded Python is preferable."}
 
     monkeypatch.setattr(main, "run_full_council", fake_council)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr(context, "query_model", fake_summary)
     client = TestClient(main.app)
-    a = client.post("/api/conversations", json={}).json()
-    b = client.post("/api/conversations", json={}).json()
+    conv = client.post("/api/conversations", json={}).json()
+    other = client.post("/api/conversations", json={}).json()
 
-    first = client.post(f"/api/conversations/{a['id']}/message",
-                        json={"content": "Is Python suitable?"})
-    assert first.status_code == 200
-    second = client.post(f"/api/conversations/{a['id']}/message",
-                         json={"content": "What about JavaScript?"})
-    assert second.status_code == 200
-    other = client.post(f"/api/conversations/{b['id']}/message",
-                        json={"content": "Completely unrelated"})
-    assert other.status_code == 200
-
-    assert prompts[0][0] == "Is Python suitable?"
-    assert "Is Python suitable?" in prompts[1][0]
-    assert "Final answer #1" in prompts[1][0]
-    assert "What about JavaScript?" in prompts[1][0]
-    assert "Raw Stage 1 internal details" not in prompts[1][0]
-    assert "Raw Stage 2 private review" not in prompts[1][0]
-    assert prompts[2][0] == "Completely unrelated"
-    assert title_requests == ["Is Python suitable?", "Completely unrelated"]
-    assert len(storage.get_conversation(a["id"])["messages"]) == 4
-    assert [m["content"] for m in storage.get_conversation(a["id"])["messages"]
-            if m["role"] == "user"] == ["Is Python suitable?", "What about JavaScript?"]
-    assert storage.get_conversation(a["id"])["messages"][-1]["stage3"]["response"] == "Final answer #2"
+    r1 = client.post(f"/api/conversations/{conv['id']}/message", json={"content": "Python or JS?"})
+    r2 = client.post(f"/api/conversations/{conv['id']}/message", json={"content": "What about AI?"})
+    r3 = client.post(f"/api/conversations/{other['id']}/message", json={"content": "Unrelated"})
+    assert [r1.status_code, r2.status_code, r3.status_code] == [200, 200, 200]
+    assert council_queries[0] == "Python or JS?"
+    assert summary_calls == [True]
+    assert "Council previously concluded Python is preferable." in council_queries[1]
+    assert council_queries[1].endswith("What about AI?")
+    assert council_queries[2] == "Unrelated"
+    saved = storage.get_conversation(conv["id"])
+    assert [x["content"] for x in saved["messages"] if x["role"] == "user"] == [
+        "Python or JS?", "What about AI?"
+    ]
+    assert saved["context_memory"]["covered_turns"] == 1
+    assert saved["messages"][1]["stage3"]["response"].endswith(" X" * 3600)
 
 
-def test_sse_followup_uses_same_context_adapter(tmp_path, monkeypatch):
+def test_sse_followup_runs_ai_summary_before_council_and_reports_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
     prompts = []
-
-    async def fake_council(query, **kwargs):
+    async def fake_council(query, **_kwargs):
         prompts.append(query)
-        return _council_result(f"Final answer #{len(prompts)}")
+        return _result("R" * 7000 if len(prompts) == 1 else "final two")
 
-    async def fake_title(question):
-        return "Stream title"
+    async def fake_title(_query):
+        return "SSE history test"
+
+    async def fake_summary(_model, _messages, **_kwargs):
+        return {"content": "The Council favored a cautious launch."}
 
     monkeypatch.setattr(main, "run_full_council", fake_council)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr(context, "query_model", fake_summary)
     client = TestClient(main.app)
-    conversation = client.post("/api/conversations", json={}).json()
-    endpoint = f"/api/conversations/{conversation['id']}/message/stream"
-    assert client.post(endpoint, json={"content": "Original question"}).status_code == 200
-    response = client.post(endpoint, json={"content": "Follow-up question"})
-    assert response.status_code == 200
-    assert "stage3_complete" in response.text
-    assert prompts[0] == "Original question"
-    assert "Original question" in prompts[1]
-    assert "Final answer #1" in prompts[1]
-    assert prompts[1].endswith("Follow-up question")
-    messages = storage.get_conversation(conversation["id"])["messages"]
-    assert len(messages) == 4
-    assert messages[2] == {"role": "user", "content": "Follow-up question"}
-    assert messages[3]["stage3"]["response"] == "Final answer #2"
+    conv = client.post("/api/conversations", json={}).json()
+    endpoint = f"/api/conversations/{conv['id']}/message/stream"
+    assert client.post(endpoint, json={"content": "Initial?"}).status_code == 200
+    result = client.post(endpoint, json={"content": "Follow up?"})
+    events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+    actual_progress = [e["data"] for e in events if e["type"] == "engine_progress"]
+    assert [(x["stage"], x["state"]) for x in actual_progress] == [
+        ("memory", "started"), ("memory", "completed")
+    ]
+    assert "The Council favored a cautious launch." in prompts[1]
+    assert prompts[1].endswith("Follow up?")
+    assert storage.get_conversation(conv["id"])["context_memory"]["covered_turns"] == 1
+    assert storage.get_conversation(conv["id"])["messages"][2] == {
+        "role": "user", "content": "Follow up?"
+    }
+
+
+def test_summary_failure_returns_error_without_running_expensive_council(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+    original = storage.create_conversation("4f82eb89-f777-4a36-a8f6-8991512c764e")
+    storage.add_user_message(original["id"], "Original")
+    storage.add_assistant_message(original["id"], [], [], {"response": "T" * 7000})
+
+    async def fail_summary(*_args, **_kwargs):
+        return None
+
+    async def forbidden_council(*_args, **_kwargs):
+        raise AssertionError("Should not start Council if memory failed")
+
+    monkeypatch.setattr(context, "query_model", fail_summary)
+    monkeypatch.setattr(main, "run_full_council", forbidden_council)
+    client = TestClient(main.app)
+    endpoint = f"/api/conversations/{original['id']}/message"
+    response = client.post(endpoint, json={"content": "New"})
+    assert response.status_code == 503
+    assert "memory" in response.json()["detail"].lower()
+    stream = client.post(endpoint + "/stream", json={"content": "New"})
+    assert stream.status_code == 200
+    assert '"type": "error"' in stream.text
+    assert len(storage.get_conversation(original["id"])["messages"]) == 2
