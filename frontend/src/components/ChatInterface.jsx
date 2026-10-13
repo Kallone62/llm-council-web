@@ -5,6 +5,25 @@ import Stage2 from './Stage2';
 import Stage3 from './Stage3';
 import './ChatInterface.css';
 
+const ENGINE_STAGE_LABELS = {
+  stage1: 'Stage 1 · Individual responses',
+  stage1_5: 'Stage 1.5 · Style normalization',
+  stage2: 'Stage 2 · Peer review',
+  stage3: 'Stage 3 · Chairman synthesis',
+};
+
+function progressMessage(item) {
+  const stage = ENGINE_STAGE_LABELS[item.stage] || item.stage;
+  const status = item.state === 'started' ? 'running'
+    : item.state === 'completed' ? 'completed'
+    : item.state;
+  const count = item.state === 'completed'
+    ? (item.responses != null ? ` · ${item.responses} responses`
+      : item.reviews != null ? ` · ${item.reviews} reviews` : '')
+    : '';
+  return `${stage}: ${status}${count}`;
+}
+
 export default function ChatInterface({
   conversation,
   onSendMessage,
@@ -93,6 +112,19 @@ export default function ChatInterface({
                     </div>
                   )}
 
+                  {msg.engineProgress?.length > 0 && (
+                    <div className="engine-progress" aria-live="polite">
+                      <strong>Live engine progress</strong>
+                      {msg.engineProgress.map((event, progressIndex) => (
+                        <div key={progressIndex} className="engine-progress-event">
+                          {event.state === 'completed' ? '✓' :
+                            event.state === 'failed' ? '✕' : '·'}{' '}
+                          {progressMessage(event)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {msg.loading?.stage1 && (
                     <div className="stage-loading">
                       <div className="spinner"></div>
@@ -136,7 +168,7 @@ export default function ChatInterface({
         {isLoading && (
           <div className="loading-indicator">
             <div className="spinner"></div>
-            <span>Consulting the council...</span>
+            <span>Council engine running…</span>
           </div>
         )}
 
