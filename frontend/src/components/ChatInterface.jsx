@@ -21,7 +21,8 @@ function progressMessage(item) {
     ? (item.responses != null ? ` · ${item.responses} responses`
       : item.reviews != null ? ` · ${item.reviews} reviews` : '')
     : '';
-  return `${stage}: ${status}${count}`;
+  const elapsed = typeof item.elapsed_seconds === 'number' ? ` · ${item.elapsed_seconds}s` : '';
+  return `${stage}: ${status}${count}${elapsed}`;
 }
 
 export default function ChatInterface({
@@ -112,10 +113,10 @@ export default function ChatInterface({
                     </div>
                   )}
 
-                  {msg.engineProgress?.length > 0 && (
+                  {(msg.engineProgress?.length > 0 || msg.metadata?.ui_runtime_progress?.length > 0) && (
                     <div className="engine-progress" aria-live="polite">
                       <strong>Live engine progress</strong>
-                      {msg.engineProgress.map((event, progressIndex) => (
+                      {(msg.engineProgress?.length ? msg.engineProgress : msg.metadata?.ui_runtime_progress || []).map((event, progressIndex) => (
                         <div key={progressIndex} className="engine-progress-event">
                           {event.state === 'completed' ? '✓' :
                             event.state === 'failed' ? '✕' : '·'}{' '}
