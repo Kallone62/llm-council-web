@@ -6,6 +6,7 @@ import Stage3 from './Stage3';
 import './ChatInterface.css';
 
 const ENGINE_STAGE_LABELS = {
+  memory: 'Conversation memory · AI summary',
   stage1: 'Stage 1 · Individual responses',
   stage1_5: 'Stage 1.5 · Style normalization',
   stage2: 'Stage 2 · Peer review',
