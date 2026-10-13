@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import logging
+import time
 import uuid
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, List, Literal, Optional
@@ -403,9 +404,13 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue()
+        stage_events: List[Dict[str, Any]] = []
+        start_time = time.monotonic()
 
         async def progress(data: Dict[str, Any]) -> None:
-            await queue.put({"type": "engine_progress", "data": data})
+            event_data = {**data, "elapsed_seconds": round(time.monotonic() - start_time, 2)}
+            stage_events.append(event_data)
+            await queue.put({"type": "engine_progress", "data": event_data})
 
         async def run_council() -> None:
             title_task = None
@@ -422,6 +427,8 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     per_model_timeout=_stage_timeout_seconds(),
                 )
                 metadata = engine_runtime.repair_quality_metrics(stage1, stage2, stage3, metadata)
+                # Keep a small factual stage timeline with the saved conversation.
+                metadata = {**metadata, "ui_runtime_progress": list(stage_events)}
                 storage.add_assistant_message(
                     conversation_id, stage1, stage2, stage3, metadata
                 )
