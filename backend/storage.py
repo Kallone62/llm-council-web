@@ -2,6 +2,7 @@
 
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -176,3 +177,23 @@ def update_conversation_title(conversation_id: str, title: str):
 
     conversation["title"] = title
     save_conversation(conversation)
+
+
+def delete_conversation(conversation_id: str) -> bool:
+    """Remove a conversation's JSON file. Only canonical generated UUIDs are valid.
+
+    This protects the local data directory from path traversal when deleting.
+    Returns False if a valid ID does not exist.
+    """
+    try:
+        if str(uuid.UUID(conversation_id)) != conversation_id:
+            return False
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+    path = Path(DATA_DIR) / f"{conversation_id}.json"
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
