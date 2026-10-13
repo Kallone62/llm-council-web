@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import Settings from './components/Settings';
@@ -11,6 +11,7 @@ function App() {
   const [currentConversation, setCurrentConversation] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [view, setView] = useState('chat');
+  const activeConversationIdRef = useRef(null);
   const [apiKeyConfigured, setApiKeyConfigured] = useState(null);
   const [deletingConversationId, setDeletingConversationId] = useState(null);
   const [deleteError, setDeleteError] = useState('');
@@ -36,6 +37,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    activeConversationIdRef.current = currentConversationId;
     if (currentConversationId) {
       loadConversation(currentConversationId);
     }
@@ -62,7 +64,9 @@ function App() {
   const loadConversation = async (id) => {
     try {
       const conv = await api.getConversation(id);
-      setCurrentConversation(conv);
+      if (activeConversationIdRef.current === id) {
+        setCurrentConversation(conv);
+      }
     } catch (error) {
       console.error('Failed to load conversation:', error);
     }
@@ -75,6 +79,8 @@ function App() {
         { id: newConv.id, created_at: newConv.created_at, message_count: 0 },
         ...conversations,
       ]);
+      activeConversationIdRef.current = newConv.id;
+      setCurrentConversation(null);
       setCurrentConversationId(newConv.id);
       setView('chat');
     } catch (error) {
@@ -83,6 +89,8 @@ function App() {
   };
 
   const handleSelectConversation = (id) => {
+    activeConversationIdRef.current = id;
+    setCurrentConversation(null);
     setCurrentConversationId(id);
     setView('chat');
   };
@@ -100,6 +108,7 @@ function App() {
       await api.deleteConversation(id);
       setConversations((prev) => prev.filter((item) => item.id !== id));
       if (currentConversationId === id) {
+        activeConversationIdRef.current = null;
         setCurrentConversationId(null);
         setCurrentConversation(null);
         setView('chat');
@@ -113,12 +122,19 @@ function App() {
   };
 
   const handleSendMessage = async (content, options = {}) => {
-    if (!currentConversationId) return;
+    if (!currentConversationId || isLoading) return;
+    const sendConversationId = currentConversationId;
+    const updateSentConversation = (updater) => {
+      setCurrentConversation((prev) =>
+        prev?.id === sendConversationId ? updater(prev) : prev
+      );
+    };
+    let completed = false;
 
     setIsLoading(true);
     try {
       const userMessage = { role: 'user', content };
-      setCurrentConversation((prev) => ({
+      updateSentConversation((prev) => ({
         ...prev,
         messages: [...prev.messages, userMessage],
       }));
@@ -134,15 +150,15 @@ function App() {
         loading: { stage1: false, stage2: false, stage3: false },
       };
 
-      setCurrentConversation((prev) => ({
+      updateSentConversation((prev) => ({
         ...prev,
         messages: [...prev.messages, assistantMessage],
       }));
 
-      await api.sendMessageStream(currentConversationId, content, (eventType, event) => {
+      await api.sendMessageStream(sendConversationId, content, (eventType, event) => {
         switch (eventType) {
           case 'engine_progress':
-            setCurrentConversation((prev) => {
+            updateSentConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = { ...messages[messages.length - 1] };
               lastMsg.engineProgress = [...(lastMsg.engineProgress || []), event.data];
@@ -151,14 +167,14 @@ function App() {
             });
             break;
           case 'stage1_start':
-            setCurrentConversation((prev) => {
+            updateSentConversation((prev) => {
               const messages = [...prev.messages];
               messages[messages.length - 1].loading.stage1 = true;
               return { ...prev, messages };
             });
             break;
           case 'stage1_complete':
-            setCurrentConversation((prev) => {
+            updateSentConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.stage1 = event.data;
@@ -167,14 +183,14 @@ function App() {
             });
             break;
           case 'stage2_start':
-            setCurrentConversation((prev) => {
+            updateSentConversation((prev) => {
               const messages = [...prev.messages];
               messages[messages.length - 1].loading.stage2 = true;
               return { ...prev, messages };
             });
             break;
           case 'stage2_complete':
-            setCurrentConversation((prev) => {
+            updateSentConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.stage2 = event.data;
@@ -184,14 +200,14 @@ function App() {
             });
             break;
           case 'stage3_start':
-            setCurrentConversation((prev) => {
+            updateSentConversation((prev) => {
               const messages = [...prev.messages];
               messages[messages.length - 1].loading.stage3 = true;
               return { ...prev, messages };
             });
             break;
           case 'stage3_complete':
-            setCurrentConversation((prev) => {
+            updateSentConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.stage3 = event.data;
@@ -204,19 +220,18 @@ function App() {
             loadConversations();
             break;
           case 'complete':
+            completed = true;
             loadConversations();
-            setIsLoading(false);
             break;
           case 'error':
             console.error('Stream error:', event.message);
-            setCurrentConversation((prev) => {
+            updateSentConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.error = event.message || 'Council request failed.';
               lastMsg.loading = { stage1: false, stage2: false, stage3: false };
               return { ...prev, messages };
             });
-            setIsLoading(false);
             break;
           default:
             console.log('Unknown event type:', eventType);
@@ -224,10 +239,22 @@ function App() {
       }, options);
     } catch (error) {
       console.error('Failed to send message:', error);
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: prev.messages.slice(0, -2),
-      }));
+      updateSentConversation((prev) => {
+        const messages = [...prev.messages];
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg?.role === 'assistant') {
+          messages[messages.length - 1] = {
+            ...lastMsg,
+            error: error.message || 'Could not complete the Council request.',
+            loading: { stage1: false, stage2: false, stage3: false },
+          };
+        }
+        return { ...prev, messages };
+      });
+    } finally {
+      if (completed && activeConversationIdRef.current === sendConversationId) {
+        await loadConversation(sendConversationId);
+      }
       setIsLoading(false);
     }
   };
