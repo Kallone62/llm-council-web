@@ -280,6 +280,7 @@ function App() {
         <Settings onApiKeyStatusChange={setApiKeyConfigured} />
       ) : (
         <ChatInterface
+          key={currentConversationId || 'empty'}
           conversation={currentConversation}
           onSendMessage={handleSendMessage}
           isLoading={isLoading}
