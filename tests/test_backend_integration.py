@@ -200,3 +200,50 @@ def test_settings_never_return_openrouter_secret(monkeypatch):
     assert response.status_code == 200
     assert response.json()["api_key_configured"] is True
     assert secret not in response.text
+
+
+def test_sse_persists_actual_native_stage_progress(tmp_path, monkeypatch):
+    """The callback comes from the engine, not from guessed UI timers."""
+    storage.DATA_DIR = str(tmp_path / "conversations")
+
+    async def fake_run_full_council(_query, **_kwargs):
+        await main.engine_runtime.emit_progress("stage1", "started")
+        await main.engine_runtime.emit_progress("stage1", "completed", responses=1)
+        await main.engine_runtime.emit_progress("stage2", "started")
+        await main.engine_runtime.emit_progress("stage2", "completed", reviews=1)
+        await main.engine_runtime.emit_progress("stage3", "started")
+        await main.engine_runtime.emit_progress("stage3", "completed")
+        return _engine_result()
+
+    async def fake_title(_query):
+        return "Progress Test"
+
+    monkeypatch.setattr(main, "run_full_council", fake_run_full_council)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+
+    client = TestClient(main.app)
+    conversation = client.post("/api/conversations", json={}).json()
+    result = client.post(
+        f"/api/conversations/{conversation['id']}/message/stream",
+        json={"content": "Will it work?"},
+    )
+    assert result.status_code == 200
+    events = [
+        json.loads(line[6:])
+        for line in result.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    progress = [event["data"] for event in events if event["type"] == "engine_progress"]
+    assert [item["stage"] for item in progress] == [
+        "stage1", "stage1", "stage2", "stage2", "stage3", "stage3",
+    ]
+    assert progress[1]["responses"] == 1
+    assert progress[3]["reviews"] == 1
+    assert all(item["elapsed_seconds"] >= 0 for item in progress)
+    assert events.index(next(e for e in events if e["type"] == "engine_progress")) < events.index(
+        next(e for e in events if e["type"] == "stage1_complete")
+    )
+
+    stored = storage.get_conversation(conversation["id"])
+    saved = stored["messages"][-1]["metadata"]["ui_runtime_progress"]
+    assert saved == progress
