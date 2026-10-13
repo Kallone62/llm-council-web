@@ -1,17 +1,17 @@
 .stage3 {
-  background: #f0fff0;
-  border-color: #c8e6c8;
+  background: var(--green-soft-bg);
+  border-color: var(--green-border);
 }
 
 .final-response {
-  background: #ffffff;
+  background: var(--surface);
   padding: 20px;
   border-radius: 6px;
-  border: 1px solid #c8e6c8;
+  border: 1px solid var(--green-border);
 }
 
 .chairman-label {
-  color: #2d8a2d;
+  color: var(--success);
   font-size: 12px;
   font-family: monospace;
   margin-bottom: 12px;
@@ -19,7 +19,7 @@
 }
 
 .final-text {
-  color: #333;
+  color: var(--text);
   line-height: 1.7;
   font-size: 15px;
 }
@@ -27,10 +27,10 @@
 .verdict-summary {
   margin: 12px 0 16px;
   padding: 12px 14px;
-  border: 1px solid #d7dce2;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f8fafc;
-  color: #333;
+  background: var(--soft-bg);
+  color: var(--text);
 }
 
 .verdict-heading {
