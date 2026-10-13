@@ -58,6 +58,24 @@ export const api = {
     return readJson(response, 'Failed to create conversation');
   },
 
+  /** Permanently delete a locally stored conversation. */
+  async deleteConversation(conversationId) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}`,
+      { method: 'DELETE' }
+    );
+    if (!response.ok) {
+      let detail = 'Failed to delete conversation';
+      try {
+        const body = await response.json();
+        detail = body.detail || detail;
+      } catch {
+        // Keep fallback error.
+      }
+      throw new Error(detail);
+    }
+  },
+
   /** Get a specific conversation. */
   async getConversation(conversationId) {
     const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`);

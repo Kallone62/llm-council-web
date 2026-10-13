@@ -93,6 +93,6 @@ body {
 .markdown-content blockquote {
   margin: 0 0 12px 0;
   padding-left: 16px;
-  border-left: 4px solid #ddd;
-  color: #666;
+  border-left: 4px solid var(--border);
+  color: var(--muted);
 }
