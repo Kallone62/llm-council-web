@@ -471,11 +471,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     event = await asyncio.wait_for(queue.get(), timeout=10)
                 except asyncio.TimeoutError:
                     # Transport keepalive, not an invented model-progress event.
-                    yield ": keepalive\\n\\n"
+                    yield ": keepalive\n\n"
                     continue
                 if event is None:
                     break
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\\n\\n"
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:
             # Browser disconnects cancel expensive model requests promptly.
             if not runner.done():
