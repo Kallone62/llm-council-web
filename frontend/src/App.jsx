@@ -87,6 +87,7 @@ function App() {
         stage2: null,
         stage3: null,
         metadata: null,
+        engineProgress: [],
         error: null,
         loading: { stage1: false, stage2: false, stage3: false },
       };
@@ -98,6 +99,15 @@ function App() {
 
       await api.sendMessageStream(currentConversationId, content, (eventType, event) => {
         switch (eventType) {
+          case 'engine_progress':
+            setCurrentConversation((prev) => {
+              const messages = [...prev.messages];
+              const lastMsg = { ...messages[messages.length - 1] };
+              lastMsg.engineProgress = [...(lastMsg.engineProgress || []), event.data];
+              messages[messages.length - 1] = lastMsg;
+              return { ...prev, messages };
+            });
+            break;
           case 'stage1_start':
             setCurrentConversation((prev) => {
               const messages = [...prev.messages];
