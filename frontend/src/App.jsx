@@ -12,6 +12,23 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [view, setView] = useState('chat');
   const [apiKeyConfigured, setApiKeyConfigured] = useState(null);
+  const [deletingConversationId, setDeletingConversationId] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem('llm-council-theme') === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('llm-council-theme', theme);
+    } catch {
+      // Local browser storage may be unavailable; theme still works this session.
+    }
+  }, [theme]);
 
   useEffect(() => {
     loadConversations();
@@ -68,6 +85,31 @@ function App() {
   const handleSelectConversation = (id) => {
     setCurrentConversationId(id);
     setView('chat');
+  };
+
+  const handleDeleteConversation = async (id) => {
+    if (isLoading || deletingConversationId) return;
+    const conversation = conversations.find((item) => item.id === id);
+    if (!conversation) return;
+    const title = conversation.title || 'New Conversation';
+    if (!window.confirm(`Delete "${title}" permanently? This cannot be undone.`)) return;
+
+    setDeleteError('');
+    setDeletingConversationId(id);
+    try {
+      await api.deleteConversation(id);
+      setConversations((prev) => prev.filter((item) => item.id !== id));
+      if (currentConversationId === id) {
+        setCurrentConversationId(null);
+        setCurrentConversation(null);
+        setView('chat');
+      }
+    } catch (error) {
+      console.error('Failed to delete conversation:', error);
+      setDeleteError(error.message || 'Could not delete conversation.');
+    } finally {
+      setDeletingConversationId(null);
+    }
   };
 
   const handleSendMessage = async (content, options = {}) => {
@@ -191,7 +233,7 @@ function App() {
   };
 
   return (
-    <div className="app">
+    <div className="app" data-theme={theme}>
       <Sidebar
         conversations={conversations}
         currentConversationId={currentConversationId}
@@ -200,6 +242,12 @@ function App() {
         onOpenSettings={() => setView('settings')}
         settingsActive={view === 'settings'}
         apiKeyConfigured={apiKeyConfigured}
+        onDeleteConversation={handleDeleteConversation}
+        deletingConversationId={deletingConversationId}
+        deleteError={deleteError}
+        deletionDisabled={isLoading}
+        theme={theme}
+        onToggleTheme={() => setTheme((prev) => prev === 'dark' ? 'light' : 'dark')}
       />
       {view === 'settings' ? (
         <Settings onApiKeyStatusChange={setApiKeyConfigured} />
