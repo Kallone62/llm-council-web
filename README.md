@@ -118,18 +118,31 @@ Open `http://localhost:5173`.
 ## Follow-up conversations
 
 After the first Council result, the message composer stays available in the
-same chat. Follow-up questions trigger a new full Amiable Council round using
-the latest user question plus a bounded amount of prior conversation context:
-up to three **completed** question / Chairman-final-answer exchanges,
-maximum 6,000 characters of prior context. The independent Stage 1 answers,
-Stage 2 reviews and usage metadata are still stored in full, but are **not**
-re-sent as history on later rounds.
+same chat. Follow-up questions start a new full Amiable Council round.
 
-- New chats and first questions retain the original single-question behavior.
-- Prior unanswered or failed rounds are not presented as Council decisions.
-- Every follow-up invokes the configured models again and incurs new OpenRouter
-  usage; keeping history short limits additional token cost.
-- The full, original user text is saved and shown, not a history-expanded prompt.
+To preserve the meaning of previous decisions **without chopping answers off
+mid-sentence**, conversation context is prepared as follows:
+
+- Short histories: pass full previous user questions and Chairman final answers
+  unchanged (no summarization call).
+- Long histories (more than 6,000 characters): use the existing Amiable
+  OpenRouter `query_model()` client with `google/gemini-2.5-flash` to generate
+  a compact decision-oriented memory (maximum 4,000 characters).
+- Store the AI summary in the same conversation JSON under `context_memory`
+  with the number of completed rounds it covers, then update it incrementally
+  only when the context grows too large again.
+- Do not resubmit raw Stage 1/2 peer reviews, and do not rewrite or truncate
+  the full saved conversation history.
+- If the memory model fails or responds with unusable/oversized text, return
+  an error **before** starting another expensive Council round rather than
+  silently deleting relevant context.
+
+An AI summary is a *lossy, fallible interpretation*, not guaranteed perfect
+recall. For important decisions, refer to the full earlier answers retained in
+the local JSON. Summarization incurs a separate OpenRouter model call and
+charge when needed, in addition to any new three-stage Council run. OpenRouter
+cost metadata from the full Council run does not automatically include the
+separate memory-summarization charge.
 
 ## Settings
 
