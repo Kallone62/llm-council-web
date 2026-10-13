@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import logging
 import uuid
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, List, Literal, Optional
@@ -24,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 # before the Amiable package initializes its global configuration.
 from . import config as app_config
 from . import storage
+from . import engine_runtime
 
 from llm_council.council import run_full_council
 from llm_council.council_stages import generate_conversation_title
@@ -31,6 +33,10 @@ from llm_council.default_pools import default_pool_models
 from llm_council.tier_contract import TIER_AGGREGATORS
 from llm_council.unified_config import get_config, reload_config
 from llm_council.verdict import VerdictType
+
+engine_runtime.install_stage_hooks()
+
+logger = logging.getLogger(__name__)
 
 APP_VERSION = "1.0.0"
 PROFILE_NAMES = ("quick", "balanced", "high", "reasoning")
@@ -361,6 +367,8 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         per_model_timeout=_stage_timeout_seconds(),
     )
 
+    metadata = engine_runtime.repair_quality_metrics(stage1_results, stage2_results, stage3_result, metadata)
+
     storage.add_assistant_message(
         conversation_id,
         stage1_results,
@@ -379,12 +387,12 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
 
 @app.post("/api/conversations/{conversation_id}/message/stream")
 async def send_message_stream(conversation_id: str, request: SendMessageRequest):
-    """Run Amiable directly and expose Karpathy-compatible SSE events.
+    """Stream actual native engine stage boundaries, then full Karpathy data.
 
-    Amiable's full orchestrator stays authoritative so its modern ranking,
-    verdict, safety/bias, cache and usage logic is not reimplemented here.
-    Karpathy's original client expects stage-complete SSE messages, so the
-    completed engine result is emitted through that legacy event envelope.
+    The pinned Amiable run_full_council() has no per-model callback, so progress
+    uses transparent wrappers around its native stage coroutines. We do NOT
+    claim individual models finished until the engine returns that stage, and
+    retain the original full Council result including raw peer critiques.
     """
 
     conversation = storage.get_conversation(conversation_id)
@@ -394,49 +402,88 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     is_first_message = len(conversation["messages"]) == 0
 
     async def event_generator():
-        title_task = None
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def progress(data: Dict[str, Any]) -> None:
+            await queue.put({"type": "engine_progress", "data": data})
+
+        async def run_council() -> None:
+            title_task = None
+            token = engine_runtime.watch_progress(progress)
+            try:
+                storage.add_user_message(conversation_id, request.content)
+                if is_first_message:
+                    title_task = asyncio.create_task(generate_conversation_title(request.content))
+
+                stage1, stage2, stage3, metadata = await run_full_council(
+                    request.content,
+                    verdict_type=_verdict_type(request),
+                    include_dissent=request.include_dissent,
+                    per_model_timeout=_stage_timeout_seconds(),
+                )
+                metadata = engine_runtime.repair_quality_metrics(stage1, stage2, stage3, metadata)
+                storage.add_assistant_message(
+                    conversation_id, stage1, stage2, stage3, metadata
+                )
+
+                # Full engine outputs are only available once run_full_council
+                # returns. Stage boundaries have already arrived in real time.
+                await queue.put({"type": "stage1_complete", "data": stage1})
+                await queue.put({
+                    "type": "stage2_complete", "data": stage2, "metadata": metadata
+                })
+                await queue.put({
+                    "type": "stage3_complete", "data": stage3, "metadata": metadata
+                })
+                await queue.put({"type": "complete", "metadata": metadata})
+
+                # Title generation is separate and must not turn a successful
+                # Council run into an error after the result is saved.
+                if title_task:
+                    try:
+                        title = await title_task
+                        storage.update_conversation_title(conversation_id, title)
+                        await queue.put({
+                            "type": "title_complete", "data": {"title": title}
+                        })
+                    except Exception:
+                        logger.exception("Could not generate conversation title")
+            except asyncio.CancelledError:
+                if title_task and not title_task.done():
+                    title_task.cancel()
+                raise
+            except Exception:
+                logger.exception("Council execution failed")
+                if title_task and not title_task.done():
+                    title_task.cancel()
+                await queue.put({
+                    "type": "error",
+                    "message": "Council execution failed. Check the backend terminal for details.",
+                })
+            finally:
+                engine_runtime.unwatch_progress(token)
+                await queue.put(None)
+
+        runner = asyncio.create_task(run_council())
         try:
-            storage.add_user_message(conversation_id, request.content)
-
-            if is_first_message:
-                title_task = asyncio.create_task(generate_conversation_title(request.content))
-
-            # Compatibility only: Karpathy's frontend speaks its historical SSE
-            # envelope while the actual council run is Amiable's orchestrator.
-            yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
-
-            stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
-                request.content,
-                verdict_type=_verdict_type(request),
-                include_dissent=request.include_dissent,
-                per_model_timeout=_stage_timeout_seconds(),
-            )
-
-            yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
-            yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': metadata})}\n\n"
-            yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-            yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result, 'metadata': metadata})}\n\n"
-
-            if title_task:
-                title = await title_task
-                storage.update_conversation_title(conversation_id, title)
-                yield f"data: {json.dumps({'type': 'title_complete', 'data': {'title': title}})}\n\n"
-
-            storage.add_assistant_message(
-                conversation_id,
-                stage1_results,
-                stage2_results,
-                stage3_result,
-                metadata,
-            )
-
-            yield f"data: {json.dumps({'type': 'complete', 'metadata': metadata})}\n\n"
-
-        except Exception as exc:
-            if title_task and not title_task.done():
-                title_task.cancel()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=10)
+                except asyncio.TimeoutError:
+                    # Transport keepalive, not an invented model-progress event.
+                    yield ": keepalive\\n\\n"
+                    continue
+                if event is None:
+                    break
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\\n\\n"
+        finally:
+            # Browser disconnects cancel expensive model requests promptly.
+            if not runner.done():
+                runner.cancel()
+                try:
+                    await runner
+                except asyncio.CancelledError:
+                    pass
 
     return StreamingResponse(
         event_generator(),
@@ -444,6 +491,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
 
