@@ -2,8 +2,8 @@
   flex: 1;
   height: 100vh;
   overflow-y: auto;
-  background: #fff;
-  color: #333;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .settings-shell {
@@ -28,16 +28,16 @@
 .settings-heading p,
 .settings-card-title p {
   margin: 0;
-  color: #6b7280;
+  color: var(--muted);
   line-height: 1.5;
 }
 
 .settings-card {
-  border: 1px solid #e3e5e8;
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 20px;
   margin-bottom: 16px;
-  background: #fff;
+  background: var(--surface);
 }
 
 .settings-card-title {
@@ -73,7 +73,7 @@
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: .45px;
-  color: #6b7280;
+  color: var(--muted);
   font-weight: 650;
 }
 
@@ -82,10 +82,10 @@
 .add-model-row input,
 .api-key-row input {
   width: 100%;
-  border: 1px solid #d5d8dc;
+  border: 1px solid var(--border-strong);
   border-radius: 7px;
-  background: #fff;
-  color: #222;
+  background: var(--surface);
+  color: var(--text);
   padding: 10px 11px;
   font: inherit;
   outline: none;
@@ -95,20 +95,20 @@
 .field-block select:focus,
 .add-model-row input:focus,
 .api-key-row input:focus {
-  border-color: #4a90e2;
+  border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(74, 144, 226, .1);
 }
 
 .field-block small,
 .toggle-row small {
-  color: #858b94;
+  color: var(--muted);
   line-height: 1.4;
 }
 
 .profile-summary {
   margin-top: 18px;
   padding-top: 16px;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--border);
 }
 
 .model-chips {
@@ -121,9 +121,9 @@
 .model-chip {
   padding: 6px 9px;
   border-radius: 6px;
-  background: #f3f5f7;
-  border: 1px solid #e1e4e8;
-  color: #40464f;
+  background: var(--soft-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -145,7 +145,7 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  border: 1px solid #eceef0;
+  border: 1px solid var(--border);
   border-radius: 7px;
   padding: 9px 10px;
   font-size: 12px;
@@ -168,9 +168,9 @@
 .add-model-row button,
 .api-key-row button,
 .secondary-btn {
-  border: 1px solid #d0d5da;
-  background: #fff;
-  color: #333;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
   border-radius: 7px;
   padding: 9px 14px;
   cursor: pointer;
@@ -181,7 +181,7 @@
 .add-model-row button:hover:not(:disabled),
 .api-key-row button:hover:not(:disabled),
 .secondary-btn:hover:not(:disabled) {
-  background: #f6f7f8;
+  background: var(--soft-bg);
 }
 
 .toggle-row {
@@ -190,7 +190,7 @@
   justify-content: space-between;
   gap: 18px;
   padding: 13px 0;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--border);
 }
 
 .toggle-row:first-of-type {
@@ -214,7 +214,7 @@
   height: 24px;
   border: 0;
   border-radius: 999px;
-  background: #c7cbd0;
+  background: var(--border-strong);
   padding: 0;
   cursor: pointer;
   transition: background .16s ease;
@@ -222,7 +222,7 @@
 }
 
 .toggle.on {
-  background: #4a90e2;
+  background: var(--accent);
 }
 
 .toggle-knob {
@@ -232,7 +232,7 @@
   left: 3px;
   top: 3px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--surface);
   transition: transform .16s ease;
   box-shadow: 0 1px 3px rgba(0,0,0,.2);
 }
@@ -242,8 +242,8 @@
 }
 
 .settings-save-btn {
-  border: 1px solid #4a90e2;
-  background: #4a90e2;
+  border: 1px solid var(--accent);
+  background: var(--accent);
   color: white;
   border-radius: 7px;
   padding: 10px 15px;
@@ -253,7 +253,7 @@
 }
 
 .settings-save-btn:hover:not(:disabled) {
-  background: #357abd;
+  background: var(--accent-hover);
 }
 
 .settings-save-btn:disabled,
@@ -276,21 +276,21 @@
 }
 
 .settings-notice {
-  color: #176b3a;
-  background: #edf9f1;
-  border: 1px solid #c9ead5;
+  color: var(--success);
+  background: var(--green-soft-bg);
+  border: 1px solid var(--green-border);
 }
 
 .settings-error {
-  color: #9a2b24;
-  background: #fff1ef;
-  border: 1px solid #f0cbc7;
+  color: var(--danger-text);
+  background: var(--red-soft-bg);
+  border: 1px solid var(--red-border);
 }
 
 .settings-warning {
-  color: #7a5400;
-  background: #fff8df;
-  border: 1px solid #eadca9;
+  color: var(--warning-text);
+  background: var(--yellow-soft-bg);
+  border: 1px solid var(--yellow-border);
 }
 
 .status-pill {
@@ -301,15 +301,15 @@
 }
 
 .status-pill.ok {
-  color: #176b3a;
-  background: #edf9f1;
-  border: 1px solid #c9ead5;
+  color: var(--success);
+  background: var(--green-soft-bg);
+  border: 1px solid var(--green-border);
 }
 
 .status-pill.missing {
-  color: #8a5c00;
-  background: #fff8df;
-  border: 1px solid #eadca9;
+  color: var(--warning-text);
+  background: var(--yellow-soft-bg);
+  border: 1px solid var(--yellow-border);
 }
 
 .about-grid {
@@ -319,7 +319,7 @@
 }
 
 .about-grid > div {
-  border: 1px solid #eceef0;
+  border: 1px solid var(--border);
   border-radius: 7px;
   padding: 10px 11px;
   display: flex;
@@ -328,7 +328,7 @@
 }
 
 .about-grid span {
-  color: #7a8088;
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -341,15 +341,15 @@
   margin-top: 12px;
   padding: 9px 10px;
   border-radius: 6px;
-  background: #f6f7f8;
+  background: var(--soft-bg);
   font-size: 11px;
-  color: #666;
+  color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   word-break: break-all;
 }
 
 .advanced-note {
-  color: #777;
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
   margin: 12px 0 0;
@@ -364,7 +364,7 @@
 
 .settings-loading {
   padding: 40px;
-  color: #777;
+  color: var(--muted);
 }
 
 code {
