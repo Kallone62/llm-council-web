@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, field_validator
 # before the Amiable package initializes its global configuration.
 from . import config as app_config
 from . import storage
-from .conversation_context import build_council_query
+from .conversation_context import ContextSummaryError, prepare_council_query
 from . import engine_runtime
 
 from llm_council.council import run_full_council
@@ -363,7 +363,15 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
-    council_query = build_council_query(conversation["messages"], request.content)
+    try:
+        council_query, new_memory = await prepare_council_query(conversation, request.content)
+    except ContextSummaryError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not prepare AI conversation memory. Please retry.",
+        ) from exc
+    if new_memory is not None:
+        storage.update_conversation_memory(conversation_id, new_memory)
     storage.add_user_message(conversation_id, request.content)
 
     if is_first_message:
@@ -411,7 +419,6 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
-    council_query = build_council_query(conversation["messages"], request.content)
 
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue()
@@ -427,6 +434,14 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             title_task = None
             token = engine_runtime.watch_progress(progress)
             try:
+                async def memory_progress(state: str) -> None:
+                    await progress({"stage": "memory", "state": state})
+
+                council_query, new_memory = await prepare_council_query(
+                    conversation, request.content, progress_callback=memory_progress
+                )
+                if new_memory is not None:
+                    storage.update_conversation_memory(conversation_id, new_memory)
                 storage.add_user_message(conversation_id, request.content)
                 if is_first_message:
                     title_task = asyncio.create_task(generate_conversation_title(request.content))
@@ -466,6 +481,12 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         })
                     except Exception:
                         logger.exception("Could not generate conversation title")
+            except ContextSummaryError:
+                logger.exception("Could not prepare AI conversation memory")
+                await queue.put({
+                    "type": "error",
+                    "message": "Could not prepare AI conversation memory. Please retry.",
+                })
             except asyncio.CancelledError:
                 if title_task and not title_task.done():
                     title_task.cancel()
