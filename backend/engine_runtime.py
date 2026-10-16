@@ -69,7 +69,7 @@ def _retryable_free_chairman_failure(result: tuple) -> bool:
     # Only provider HTTP errors. Auth, billing, invalid payloads and arbitrary
     # exceptions must not trigger another API request.
     import re
-    return bool(re.search(r"\\b(?:404|50[0-9]|51[0-9]|52[0-9]|53[0-9])\\b", detail))
+    return bool(re.search(r"\b(?:404|50[0-9]|51[0-9]|52[0-9]|53[0-9])\b", detail))
 
 
 async def _run_free_stage3_with_fallback(original: Callable, *args, **kwargs):
