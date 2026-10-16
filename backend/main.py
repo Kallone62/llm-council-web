@@ -169,9 +169,16 @@ def _free_run_guard() -> bool:
         not is_free_profile(cfg)
         or cfg.council.style_normalization is not False
         or cfg.council.chairman_disabled
+        or cfg.evaluation.rubric.enabled
+        or cfg.evaluation.bias.audit_enabled
+        or cfg.evaluation.safety.enabled
         or cfg.gateways.default != "openrouter"
         or cfg.gateways.fallback.enabled
         or any(model in cfg.gateways.model_routing for model in FREE_MODELS)
+        or any(
+            model in cfg.gateways.model_name_map.get("openrouter", {})
+            for model in FREE_MODELS
+        )
     ):
         raise HTTPException(
             status_code=409,
@@ -365,8 +372,10 @@ async def update_settings(request: SettingsUpdateRequest):
         gateways.setdefault("fallback", {})["enabled"] = False
         # Never allow a free slug to be routed to another (possibly paid) API.
         routing = gateways.setdefault("model_routing", {})
+        names = gateways.setdefault("model_name_map", {}).setdefault("openrouter", {})
         for model in FREE_MODELS:
             routing.pop(model, None)
+            names.pop(model, None)
     elif previously_free:
         # Restore Amiable's normal gateway failover when leaving our Free
         # safety sandbox; other engine profiles keep their native behavior.
