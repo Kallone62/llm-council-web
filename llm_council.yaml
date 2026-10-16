@@ -1,14 +1,18 @@
 tiers:
-  default: high
+  default: quick
 council:
   models:
-  - openai/gpt-5.6-sol
-  - anthropic/claude-opus-5
-  - deepseek/deepseek-v4-pro-0813
-  - z-ai/glm-5.3
+  - google/gemma-4-31b-it:free
+  - qwen/qwen3.8-27b:free
+  - nvidia/nemotron-3-super-120b-a12b:free
+  chairman: google/gemma-4-31b-it:free
   synthesis_mode: consensus
   exclude_self_votes: true
   style_normalization: false
+gateways:
+  default: openrouter
+  fallback:
+    enabled: false
 evaluation:
   rubric:
     enabled: false
