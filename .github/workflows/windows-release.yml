@@ -50,7 +50,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Build production React frontend
+      - name: Build production React frontend and rasterize original SVG
         shell: pwsh
         working-directory: frontend
         env:
@@ -58,6 +58,10 @@ jobs:
         run: |
           npm install
           if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+          npm install --no-save --no-package-lock sharp@0.34.4
+          if ($LASTEXITCODE -ne 0) { throw 'Sharp install failed' }
+          node scripts/render-icons.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'SVG icon rendering failed' }
           npm run build
           if ($LASTEXITCODE -ne 0) { throw 'Vite build failed' }
           if (-not (Test-Path 'dist/index.html')) { throw 'No frontend build output' }
@@ -70,10 +74,12 @@ jobs:
           uv pip install --python .venv/Scripts/python.exe pyinstaller==6.16.0 pystray==0.19.5 pillow==11.3.0
           if ($LASTEXITCODE -ne 0) { throw 'PyInstaller install failed' }
 
-      - name: Build Windows desktop EXE with native engine
+      - name: Build Windows desktop EXE with native engine and original logo
         shell: pwsh
         run: |
-          .venv/Scripts/python.exe -m PyInstaller --noconfirm --clean --onedir --windowed --name LLMCouncilWeb --collect-all llm_council --collect-all pystray --copy-metadata llm-council-core --add-data "frontend/dist;frontend/dist" desktop_launcher.py
+          .venv/Scripts/python.exe scripts/build_desktop_icon.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows ICO generation failed' }
+          .venv/Scripts/python.exe -m PyInstaller --noconfirm --clean --onedir --windowed --name LLMCouncilWeb --icon "build/brand/LLMCouncilWeb.ico" --collect-all llm_council --collect-all pystray --copy-metadata llm-council-core --add-data "frontend/dist;frontend/dist" --add-data "build/brand/icon-64.png;brand" desktop_launcher.py
           if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
           Copy-Item llm_council.yaml dist/LLMCouncilWeb/llm_council.yaml
           Copy-Item .env.example dist/LLMCouncilWeb/.env.example
@@ -87,6 +93,9 @@ jobs:
           $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68)
           if ($subsystem -ne 2) { throw "Expected Windows GUI subsystem (2), got $subsystem" }
           Write-Host "Windows GUI subsystem verified: no CMD window"
+          if (-not (Test-Path 'build/brand/LLMCouncilWeb.ico')) { throw 'EXE icon missing' }
+          if (-not (Test-Path 'dist/LLMCouncilWeb/_internal/brand/icon-64.png')) { throw 'Tray icon missing from bundled EXE' }
+          if (-not (Test-Path 'dist/LLMCouncilWeb/_internal/frontend/dist/llm-council.svg')) { throw 'Frontend favicon SVG missing from bundled EXE' }
 
       - name: Smoke-test bundled app without OpenRouter requests
         shell: pwsh
@@ -120,7 +129,14 @@ jobs:
               if ($uiReady -and $apiReady) { break }
               Start-Sleep -Milliseconds 500
             }
-            $ready = $uiReady -and $apiReady
+            $iconReady = $false
+            if ($uiReady) {
+              try {
+                $icon = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8001/app/llm-council.svg' -TimeoutSec 8
+                $iconReady = $icon.StatusCode -eq 200 -and $icon.Content.Contains('<svg')
+              } catch { $lastError = $_.Exception.Message }
+            }
+            $ready = $uiReady -and $apiReady -and $iconReady
             if (-not $ready) {
               Write-Host "Last HTTP error: $lastError"
               Write-Host '---- APP STDOUT ----'
