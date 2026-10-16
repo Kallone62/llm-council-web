@@ -55,7 +55,7 @@ The app keeps Amiable's richer metadata instead of reducing it to the original s
 
 ## Windows desktop beta (recommended for non-developers)
 
-**GitHub Release:** [v1.1.0-beta.1](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.1)
+**Planned GitHub Release:** [v1.1.0-beta.1](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.1) (link becomes active when the beta is published after rights and packaging validation)
 
 Windows x64 users can download `LLMCouncilWeb-Windows-x64.zip`, **extract the
 entire folder**, and double-click `LLMCouncilWeb.exe`. Keep the accompanying
@@ -66,7 +66,7 @@ It opens the local browser at `http://localhost:8001/app/`. Keep the
 executable's console window open while using the app; closing it stops the
 local web server.
 
-Alternatively, paste **one command** into Windows PowerShell to download the
+Once this beta Release is published, paste **one command** into Windows PowerShell to download the
 version-pinned GitHub Release ZIP, verify its SHA256 digest, install it to your
 per-user AppData folder, create a desktop shortcut, and launch it:
 
