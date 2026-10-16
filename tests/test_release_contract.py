@@ -10,9 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_beta_version_matches_download_and_notes():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    notes = (ROOT / "RELEASE_NOTES_v1.1.0-beta.2.md").read_text(encoding="utf-8")
-    assert main.APP_VERSION == "1.1.0-beta.2"
-    assert "releases/tag/v1.1.0-beta.2" in readme
+    notes = (ROOT / "RELEASE_NOTES_v1.1.0-beta.3.md").read_text(encoding="utf-8")
+    assert main.APP_VERSION == "1.1.0-beta.3"
+    assert "releases/tag/v1.1.0-beta.3" in readme
     assert "LLMCouncilWeb-Windows-x64.zip" in notes
     assert "OpenRouter API key" in notes
     assert "does not publish a clear license" in notes
@@ -22,10 +22,10 @@ def test_publisher_requires_specific_beta_marker_or_manual_dispatch():
     wf = (ROOT / ".github" / "workflows" / "windows-release.yml").read_text(
         encoding="utf-8"
     )
-    assert "'[publish-beta-v1.1.0-beta.2]'" in wf
+    assert "'[publish-beta-v1.1.0-beta.3]'" in wf
     assert "github.ref == 'refs/heads/main'" in wf
     assert "github.event_name == 'workflow_dispatch'" in wf
     assert "--prerelease" in wf
     assert "gh release create" in wf
-    assert "RELEASE_NOTES_v1.1.0-beta.2.md" in wf
+    assert "RELEASE_NOTES_v1.1.0-beta.3.md" in wf
     assert "The original" not in wf  # notes are kept in versioned Markdown

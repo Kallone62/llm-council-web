@@ -22,8 +22,9 @@ function progressMessage(item) {
     ? (item.responses != null ? ` · ${item.responses} responses`
       : item.reviews != null ? ` · ${item.reviews} reviews` : '')
     : '';
+  const model = item.model ? ` · ${item.model}` : '';
   const elapsed = typeof item.elapsed_seconds === 'number' ? ` · ${item.elapsed_seconds}s` : '';
-  return `${stage}: ${status}${count}${elapsed}`;
+  return `${stage}: ${status}${count}${model}${elapsed}`;
 }
 
 function FreeProfileNotice({ onOpenSettings }) {

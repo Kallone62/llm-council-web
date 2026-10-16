@@ -42,3 +42,31 @@
   margin: 8px 0 0;
   line-height: 1.5;
 }
+
+/* A failed Chairman call is not a successful Final Council Answer. */
+.stage3.stage3-failed {
+  background: var(--red-soft-bg);
+  border-color: var(--red-border);
+}
+
+.stage3-failed .final-response {
+  border-color: var(--red-border);
+}
+
+.stage3-failed .chairman-label {
+  color: var(--danger-text);
+}
+
+.stage3-error {
+  padding: 12px 14px;
+  border: 1px solid var(--red-border);
+  border-radius: 8px;
+  background: var(--red-soft-bg);
+  color: var(--danger-text);
+  line-height: 1.55;
+}
+
+.stage3-error p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}

@@ -44,7 +44,7 @@ engine_runtime.install_stage_hooks()
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.1.0-beta.2"
+APP_VERSION = "1.1.0-beta.3"
 PROFILE_NAMES = ("free", "quick", "balanced", "high", "reasoning")
 NATIVE_PROFILE_NAMES = ("quick", "balanced", "high", "reasoning")
 
@@ -442,6 +442,15 @@ async def delete_conversation(conversation_id: str):
     return Response(status_code=204)
 
 
+async def _run_council_with_free_chairman_recovery(query: str, *, free_mode: bool, **kwargs):
+    """Keep Free retry state isolated to this request's native engine call."""
+    token = engine_runtime.watch_free_chairman_retry(free_mode)
+    try:
+        return await run_full_council(query, **kwargs)
+    finally:
+        engine_runtime.unwatch_free_chairman_retry(token)
+
+
 @app.post("/api/conversations/{conversation_id}/message")
 async def send_message(conversation_id: str, request: SendMessageRequest):
     """Send a message and run Amiable's complete council pipeline."""
@@ -472,8 +481,9 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         storage.update_conversation_title(conversation_id, title)
 
     # Direct Amiable engine call. No Karpathy-side council implementation.
-    stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
+    stage1_results, stage2_results, stage3_result, metadata = await _run_council_with_free_chairman_recovery(
         council_query,
+        free_mode=free_mode,
         verdict_type=_verdict_type(request),
         include_dissent=request.include_dissent,
         per_model_timeout=_stage_timeout_seconds(),
@@ -548,8 +558,9 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                             generate_conversation_title(request.content)
                         )
 
-                stage1, stage2, stage3, metadata = await run_full_council(
+                stage1, stage2, stage3, metadata = await _run_council_with_free_chairman_recovery(
                     council_query,
+                    free_mode=free_mode,
                     verdict_type=_verdict_type(request),
                     include_dissent=request.include_dissent,
                     per_model_timeout=_stage_timeout_seconds(),
