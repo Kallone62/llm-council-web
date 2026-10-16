@@ -281,3 +281,12 @@ def test_delete_rejects_invalid_id_without_touching_other_files(tmp_path, monkey
     assert response.status_code == 404
     assert storage.delete_conversation("../outside") is False
     assert (tmp_path / "conversations" / f'{created["id"]}.json').exists()
+
+
+def test_local_windows_launcher_backend_binding_is_loopback_only():
+    """The unauthenticated settings/conversations API must stay on this computer."""
+    main_source = (Path(__file__).resolve().parents[1] / "backend" / "main.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'uvicorn.run(app, host="127.0.0.1", port=8001)' in main_source
+    assert 'uvicorn.run(app, host="0.0.0.0", port=8001)' not in main_source
