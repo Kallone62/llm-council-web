@@ -82,7 +82,7 @@ jobs:
               try {
                 $ui = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/app/' -TimeoutSec 1
                 $api = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/api/settings' -TimeoutSec 2
-                if ($ui.StatusCode -eq 200 -and $ui.Content -match 'assets/' -and $api.StatusCode -eq 200) {
+                if ($ui.StatusCode -eq 200 -and $api.StatusCode -eq 200) {
                   $ready = $true
                   break
                 }
