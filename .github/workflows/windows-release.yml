@@ -55,7 +55,7 @@ jobs:
       - name: Build Windows desktop EXE with native engine
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onedir --name LLMCouncilWeb --collect-all llm_council --add-data "frontend/dist;frontend/dist" desktop_launcher.py
+          python -m PyInstaller --noconfirm --clean --onedir --name LLMCouncilWeb --collect-all llm_council --copy-metadata llm-council-core --add-data "frontend/dist;frontend/dist" desktop_launcher.py
           if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
           Copy-Item llm_council.yaml dist/LLMCouncilWeb/llm_council.yaml
           Copy-Item .env.example dist/LLMCouncilWeb/.env.example
