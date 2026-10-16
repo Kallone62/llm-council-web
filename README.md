@@ -258,7 +258,7 @@ llm_council.yaml   -> models, chairman, council/evaluation/cache settings
 
 The UI intentionally exposes the settings that are most useful to non-developer users. Advanced Amiable options can still be edited directly in `llm_council.yaml`.
 
-### Default High profile in this release
+### High profile models (when selected)
 
 - `openai/gpt-5.6-sol`
 - `anthropic/claude-opus-5`
