@@ -318,6 +318,7 @@ async def update_settings(request: SettingsUpdateRequest):
             )
 
     document = app_config.read_council_config_document()
+    previously_free = is_free_document(document)
     sections, council_section = app_config.writable_config_sections(document)
     pools = default_pool_models()
 
@@ -366,6 +367,10 @@ async def update_settings(request: SettingsUpdateRequest):
         routing = gateways.setdefault("model_routing", {})
         for model in FREE_MODELS:
             routing.pop(model, None)
+    elif previously_free:
+        # Restore Amiable's normal gateway failover when leaving our Free
+        # safety sandbox; other engine profiles keep their native behavior.
+        sections.setdefault("gateways", {}).setdefault("fallback", {})["enabled"] = True
 
     try:
         app_config.write_council_config_document(document)
