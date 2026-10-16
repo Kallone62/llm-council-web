@@ -1,5 +1,5 @@
 tiers:
-  default: quick
+  default: high
 council:
   models:
   - google/gemma-4-31b-it:free
