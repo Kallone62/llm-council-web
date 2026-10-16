@@ -76,19 +76,27 @@ jobs:
           $stderr = Join-Path $env:RUNNER_TEMP "council-desktop-stderr.log"
           $proc = Start-Process -FilePath $exe -WorkingDirectory $appFolder -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           try {
-            $ready = $false
-            for ($i = 0; $i -lt 40; $i++) {
+            $uiReady = $false
+            $apiReady = $false
+            $lastError = ''
+            for ($i = 0; $i -lt 18; $i++) {
               if ($proc.HasExited) { break }
-              try {
-                $ui = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/app/' -TimeoutSec 1
-                $api = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/api/settings' -TimeoutSec 2
-                if ($ui.StatusCode -eq 200 -and $api.StatusCode -eq 200) {
-                  $ready = $true
-                  break
-                }
-              } catch { $lastError = $_.Exception.Message }
+              if (-not $uiReady) {
+                try {
+                  $ui = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8001/app/' -TimeoutSec 8
+                  $uiReady = $ui.StatusCode -eq 200
+                } catch { $lastError = $_.Exception.Message }
+              }
+              if (-not $apiReady) {
+                try {
+                  $api = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8001/api/settings' -TimeoutSec 8
+                  $apiReady = $api.StatusCode -eq 200
+                } catch { $lastError = $_.Exception.Message }
+              }
+              if ($uiReady -and $apiReady) { break }
               Start-Sleep -Milliseconds 500
             }
+            $ready = $uiReady -and $apiReady
             if (-not $ready) {
               Write-Host "Last HTTP error: $lastError"
               Write-Host '---- APP STDOUT ----'
