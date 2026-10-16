@@ -538,4 +538,6 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Local-only app: do not expose the unauthenticated API or saved conversations
+    # to other devices on the network.
+    uvicorn.run(app, host="127.0.0.1", port=8001)
