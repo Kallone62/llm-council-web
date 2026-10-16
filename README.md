@@ -62,9 +62,18 @@ entire folder**, and double-click `LLMCouncilWeb.exe`. Keep the accompanying
 `_internal` folder and YAML next to the executable. The release bundles its
 own Python runtime, the Amiable engine and the production React UI. **No Git,
 Node.js, uv, Python or BAT scripts are needed to run the desktop release.**
-It opens the local browser at `http://localhost:8001/app/`. Keep the
-executable's console window open while using the app; closing it stops the
-local web server.
+It opens the local browser at `http://localhost:8001/app/` **without
+showing a CMD or terminal window**. While running, the app shows an icon in
+the **Windows notification area (system tray)**, sometimes behind the ^ arrow.
+Right-click it to choose **Open LLM Council** or **Quit LLM Council**.
+Closing the browser tab does not stop the local server: use **Quit LLM Council**
+in the tray to shut it down. If the app fails to start, a Windows message box
+reports the error and logs are written under
+`%LOCALAPPDATA%\\LLMCouncilWeb\\logs`.
+
+The initial ZIP and one-command PowerShell installer are still separate ways
+to distribute the same GUI EXE; the PowerShell install window appears only
+during installation.
 
 Once this beta Release is published, paste **one command** into Windows PowerShell to download the
 version-pinned GitHub Release ZIP, verify its SHA256 digest, install it to your
