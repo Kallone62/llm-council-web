@@ -108,7 +108,10 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
             details["responses"] = len(result[0])
         elif stage == "stage2" and isinstance(result, tuple):
             details["reviews"] = len(result[0])
-        await emit_progress(stage, "completed", **details)
+        if stage == "stage3" and result[0].get("error_status"):
+            await emit_progress(stage, "failed", error_status=result[0]["error_status"])
+        else:
+            await emit_progress(stage, "completed", **details)
         return result
 
     wrapped.__name__ = original.__name__
