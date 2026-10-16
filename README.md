@@ -53,6 +53,49 @@ The app keeps Amiable's richer metadata instead of reducing it to the original s
 - **One-click Windows launcher** and optional desktop shortcut
 - Pinned `llm-council-core==0.53.0`; no automatic upstream updater
 
+## Windows desktop beta (recommended for non-developers)
+
+**Planned GitHub Release:** [v1.1.0-beta.1](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.1) (link becomes active when the beta is published after rights and packaging validation)
+
+Windows x64 users can download `LLMCouncilWeb-Windows-x64.zip`, **extract the
+entire folder**, and double-click `LLMCouncilWeb.exe`. Keep the accompanying
+`_internal` folder and YAML next to the executable. The release bundles its
+own Python runtime, the Amiable engine and the production React UI. **No Git,
+Node.js, uv, Python or BAT scripts are needed to run the desktop release.**
+It opens the local browser at `http://localhost:8001/app/`. Keep the
+executable's console window open while using the app; closing it stops the
+local web server.
+
+Once this beta Release is published, paste **one command** into Windows PowerShell to download the
+version-pinned GitHub Release ZIP, verify its SHA256 digest, install it to your
+per-user AppData folder, create a desktop shortcut, and launch it:
+
+```powershell
+irm https://raw.githubusercontent.com/Kallone62/llm-council-web/v1.1.0-beta.1/scripts/install.ps1 | iex
+```
+
+**Security:** Piping a downloaded script into `iex` executes its contents.
+Before running it, inspect the exact [installer source](scripts/install.ps1)
+on GitHub. The install script downloads only from the tagged GitHub Release,
+checks the matching SHA256 asset, and does not request administrator privileges.
+Windows SmartScreen may warn about the currently **unsigned** community beta.
+
+The installer **preserves existing .env, llm_council.yaml and data/** from its
+own previous desktop installation. It deliberately does **not** overwrite or
+import files from a separate Git-cloned/.bat-based developer checkout; those
+remain separate unless manually migrated. The local backend binds to
+`127.0.0.1` only; it is not a public hosted service.
+
+The EXE is a packaging layer, not a rewrite of Karpathy's frontend or Amiable's
+engine. You still need your own OpenRouter API key (set it in **Settings**), and
+model requests may incur OpenRouter charges. Start with the **Quick** profile
+if you want to limit cost. The automated Windows smoke test does not make paid
+model calls. This is a **beta**, not a claim that all provider/model combinations
+have been exhaustively tested. See [NOTICE.md](NOTICE.md) for third-party
+attribution and licensing limitations.
+
+## Developer checkout (existing method)
+
 ## One-click Windows start
 
 ### First run

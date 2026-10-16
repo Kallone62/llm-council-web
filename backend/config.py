@@ -8,13 +8,20 @@ settings exposed by the Karpathy UI.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import yaml
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# In a PyInstaller executable the user-writable configuration and conversations
+# live alongside the EXE, never inside PyInstaller's read-only runtime bundle.
+PROJECT_ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[1]
+)
 ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_COUNCIL_CONFIG_PATH = PROJECT_ROOT / "llm_council.yaml"
 
