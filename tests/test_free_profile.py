@@ -431,3 +431,163 @@ def test_free_profile_sets_retry_context_for_both_api_paths(free_client, monkeyp
         assert any('"type": "complete"' in line for line in r.text.splitlines())
     assert observed == [True]
     assert engine_runtime._free_chairman_retry.get() is False
+
+
+
+def test_free_chairman_429_then_404_then_third_free_model_succeeds(
+    free_client, monkeypatch
+):
+    client, _ = free_client
+    _select_free(client)
+    from backend import engine_runtime
+    import llm_council.council as council
+
+    monkeypatch.setattr(engine_runtime, "FREE_CHAIRMAN_RETRY_PAUSE_SECONDS", 0)
+    calls = []
+    progress = []
+
+    async def native_stage3(*args, **kwargs):
+        model = council._get_chairman_model()
+        calls.append((model, args, kwargs))
+        if model == FREE_MODELS[0]:
+            return ({"model": model, "response": "rate-limited",
+                     "error_status": "rate_limited",
+                     "error_detail": "Rate limited by primary"}, {}, None)
+        if model == FREE_MODELS[1]:
+            return ({"model": model, "response": "HTTP 404",
+                     "error_status": "error",
+                     "error_detail": (
+                         "HTTPStatusError: Client error '404 Not Found' for url "
+                         "'https://openrouter.ai/api/v1/chat/completions'"
+                     )}, {}, None)
+        return ({"model": model, "response": "Chairman succeeded"},
+                {"total_tokens": 92}, None)
+
+    async def capture(event):
+        progress.append(event)
+
+    async def drive():
+        token = engine_runtime.watch_free_chairman_retry(True)
+        progress_token = engine_runtime.watch_progress(capture)
+        try:
+            return await engine_runtime.wrap_stage("stage3", native_stage3)(
+                "question", verdict_type="synthesis"
+            )
+        finally:
+            engine_runtime.unwatch_progress(progress_token)
+            engine_runtime.unwatch_free_chairman_retry(token)
+
+    final, usage, verdict = asyncio.run(drive())
+    assert [entry[0] for entry in calls] == list(FREE_MODELS)
+    assert all(entry[1:] == calls[0][1:] for entry in calls)
+    assert final == {"model": FREE_MODELS[2], "response": "Chairman succeeded"}
+    assert usage["total_tokens"] == 92
+    assert [e["model"] for e in progress if e["state"] == "retrying"] == list(FREE_MODELS[1:])
+    assert progress[-1]["state"] == "completed"
+    assert council._get_chairman_model() == FREE_CHAIRMAN
+
+
+@pytest.mark.parametrize("detail", [
+    "HTTPStatusError: Server error '500 Internal Server Error' for url",
+    "HTTPStatusError: Server error '502 Bad Gateway' for url",
+    "HTTPStatusError: Server error '503 Service Unavailable' for url",
+    "HTTPStatusError: Server error '504 Gateway Timeout' for url",
+])
+def test_free_chairman_provider_errors_recover_with_second_free_model(
+    free_client, monkeypatch, detail
+):
+    client, _ = free_client
+    _select_free(client)
+    from backend import engine_runtime
+    import llm_council.council as council
+    monkeypatch.setattr(engine_runtime, "FREE_CHAIRMAN_RETRY_PAUSE_SECONDS", 0)
+    calls = []
+
+    async def stage3(*args, **kwargs):
+        model = council._get_chairman_model()
+        calls.append(model)
+        if len(calls) == 1:
+            return ({"model": model, "error_status": "error",
+                     "error_detail": detail, "response": "failed"}, {}, None)
+        return ({"model": model, "response": "Succeeded"}, {}, None)
+
+    token = engine_runtime.watch_free_chairman_retry(True)
+    try:
+        final, _, _ = asyncio.run(engine_runtime.wrap_stage("stage3", stage3)())
+    finally:
+        engine_runtime.unwatch_free_chairman_retry(token)
+    assert calls == list(FREE_MODELS[:2])
+    assert final["response"] == "Succeeded"
+
+
+@pytest.mark.parametrize("detail", [
+    "HTTPStatusError: Client error '401 Unauthorized' for url",
+    "HTTPStatusError: Client error '402 Payment Required' for url",
+    "HTTPStatusError: Client error '400 Bad Request' for url",
+    "Something went wrong before a provider was selected",
+])
+def test_free_chairman_non_retryable_errors_stop_immediately(
+    free_client, monkeypatch, detail
+):
+    client, _ = free_client
+    _select_free(client)
+    from backend import engine_runtime
+    import llm_council.council as council
+    calls = []
+
+    async def stage3(*args, **kwargs):
+        calls.append(council._get_chairman_model())
+        return ({"model": calls[-1], "error_status": "error",
+                 "error_detail": detail, "response": "failed"}, {}, None)
+
+    token = engine_runtime.watch_free_chairman_retry(True)
+    try:
+        final, _, _ = asyncio.run(engine_runtime.wrap_stage("stage3", stage3)())
+    finally:
+        engine_runtime.unwatch_free_chairman_retry(token)
+    assert calls == [FREE_CHAIRMAN]
+    assert final["error_detail"] == detail
+
+
+def test_free_chairman_429_and_404_and_503_all_fail_fairly(
+    free_client, monkeypatch
+):
+    client, _ = free_client
+    _select_free(client)
+    from backend import engine_runtime
+    import llm_council.council as council
+    monkeypatch.setattr(engine_runtime, "FREE_CHAIRMAN_RETRY_PAUSE_SECONDS", 0)
+    calls = []
+    statuses = [
+        ("rate_limited", "Rate limited"),
+        ("error", "HTTPStatusError: 404 Not Found"),
+        ("error", "HTTPStatusError: 503 Service Unavailable"),
+    ]
+
+    async def stage3(*args, **kwargs):
+        model = council._get_chairman_model()
+        calls.append(model)
+        status, detail = statuses[len(calls) - 1]
+        return ({"model": model, "error_status": status,
+                 "error_detail": detail, "response": "failed"}, {}, None)
+
+    token = engine_runtime.watch_free_chairman_retry(True)
+    try:
+        final, _, _ = asyncio.run(engine_runtime.wrap_stage("stage3", stage3)())
+    finally:
+        engine_runtime.unwatch_free_chairman_retry(token)
+    assert calls == list(FREE_MODELS)
+    assert final["free_fallback_exhausted"] is True
+    assert final["error_status"] == "error"
+    assert "Please wait" in final["response"]
+    assert [x["status"] for x in final["free_chairman_attempts"]] == [
+        "rate_limited", "error", "error"
+    ]
+
+
+def test_legacy_stage3_failure_text_shown_as_error():
+    from pathlib import Path
+    component = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "Stage3.jsx"
+    source = component.read_text(encoding="utf-8")
+    assert "Error: Unable to generate final synthesis" in source
+    assert "stage3-failed" in source
