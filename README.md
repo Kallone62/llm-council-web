@@ -65,7 +65,7 @@ there is no separate logo to maintain.
 
 ## Windows desktop beta (recommended for non-developers)
 
-**Planned GitHub Release:** [v1.1.0-beta.1](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.1) (link becomes active when the beta is published after rights and packaging validation)
+**Windows beta release:** [v1.1.0-beta.1](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.1) — download the Windows ZIP under **Assets**. See [Release notes](RELEASE_NOTES_v1.1.0-beta.1.md) for supported features, known limitations and third-party licensing caveats.
 
 Windows x64 users can download `LLMCouncilWeb-Windows-x64.zip`, **extract the
 entire folder**, and double-click `LLMCouncilWeb.exe`. Keep the accompanying
@@ -85,7 +85,7 @@ The initial ZIP and one-command PowerShell installer are still separate ways
 to distribute the same GUI EXE; the PowerShell install window appears only
 during installation.
 
-Once this beta Release is published, paste **one command** into Windows PowerShell to download the
+For an optional one-command installation, paste the following into Windows PowerShell to download the
 version-pinned GitHub Release ZIP, verify its SHA256 digest, install it to your
 per-user AppData folder, create a desktop shortcut, and launch it:
 
@@ -328,7 +328,7 @@ The Amiable engine is installed as the exact PyPI dependency `llm-council-core==
 This repository intentionally pins an **exact engine release** rather than automatically tracking upstream changes.
 
 ```text
-App:    v1.0.0
+App:    v1.1.0-beta.1
 Engine: llm-council-core==0.53.0
 ```
 

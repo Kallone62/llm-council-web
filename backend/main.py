@@ -44,7 +44,7 @@ engine_runtime.install_stage_hooks()
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0-beta.1"
 PROFILE_NAMES = ("free", "quick", "balanced", "high", "reasoning")
 NATIVE_PROFILE_NAMES = ("quick", "balanced", "high", "reasoning")
 

@@ -124,6 +124,11 @@ jobs:
                 try {
                   $api = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8001/api/settings' -TimeoutSec 8
                   $apiReady = $api.StatusCode -eq 200
+                  if ($apiReady) {
+                    $effective = $api.Content | ConvertFrom-Json
+                    if ($effective.profile -ne 'free') { throw "New-install preset must be Free, got $($effective.profile)" }
+                    if ($effective.api_key_configured) { throw 'Bundled beta must not contain any API key' }
+                  }
                 } catch { $lastError = $_.Exception.Message }
               }
               if ($uiReady -and $apiReady) { break }
@@ -180,12 +185,24 @@ jobs:
             LLMCouncilWeb-Windows-x64.zip.sha256
           if-no-files-found: error
 
-      - name: Publish v1.1.0-beta.1 GitHub prerelease when explicitly dispatched
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+      - name: Publish v1.1.0-beta.1 GitHub prerelease when explicitly requested
+        if: |
+          github.ref == 'refs/heads/main' &&
+          (
+            github.event_name == 'workflow_dispatch' ||
+            (
+              github.event_name == 'push' &&
+              contains(github.event.head_commit.message, '[publish-beta-v1.1.0-beta.1]')
+            )
+          )
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = 'v1.1.0-beta.1'
-          gh release create $tag "LLMCouncilWeb-Windows-x64.zip" "LLMCouncilWeb-Windows-x64.zip.sha256" --target $env:GITHUB_SHA --title "LLM Council Web v1.1.0 Beta 1 (Windows)" --prerelease --notes "Unofficial community integration of the Karpathy frontend with llm-council-core 0.53.0. Download the Windows ZIP, extract it, then run LLMCouncilWeb.exe. No Python, Node, Git or uv required. It opens http://localhost:8001/app/ and stores API keys and conversations locally beside the executable. For an automated installation, use the pinned PowerShell installer in scripts/install.ps1. Windows SmartScreen may warn about this currently unsigned beta. The app runs without a CMD window and provides an Open/Quit menu in the Windows system tray. Error details are logged under LocalAppData/LLMCouncilWeb/logs. OpenRouter model calls can incur separate costs. Refer to NOTICE.md for attribution and third-party licensing concerns. This is a beta: full real-provider compatibility requires further user testing."
+          $existing = gh release view $tag --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release $tag already exists; refusing to replace assets silently."
+          }
+          gh release create $tag "LLMCouncilWeb-Windows-x64.zip" "LLMCouncilWeb-Windows-x64.zip.sha256" --target $env:GITHUB_SHA --title "LLM Council Web v1.1.0 Beta 1 (Windows)" --prerelease --notes-file RELEASE_NOTES_v1.1.0-beta.1.md
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }
