@@ -32,7 +32,7 @@ function Toggle({ checked, onChange, disabled = false }) {
   );
 }
 
-export default function Settings({ onApiKeyStatusChange }) {
+export default function Settings({ onApiKeyStatusChange, onProfileChange }) {
   const [settings, setSettings] = useState(null);
   const [draft, setDraft] = useState(null);
   const [customModel, setCustomModel] = useState('');
@@ -147,6 +147,7 @@ export default function Settings({ onApiKeyStatusChange }) {
       const data = await api.updateSettings(payload);
       setSettings(data);
       setDraft({ ...data });
+      onProfileChange?.(data.profile);
       setNotice('Settings saved. New council requests will use them immediately.');
     } catch (err) {
       setError(err.message);
@@ -260,9 +261,11 @@ export default function Settings({ onApiKeyStatusChange }) {
 
           {isFree && (
             <div className="settings-warning" role="note">
-              Free uses three fixed <code>:free</code> OpenRouter models and a free Chairman.
-              No paid title or memory-summary model is called. An OpenRouter API key is still
-              required. Availability and daily request limits apply. Free providers may log prompts.
+              <strong>Free is for trying the Council.</strong> Your three-stage Council still
+              works, but model selection, style normalization, and optional rubric, bias, and
+              safety evaluations are restricted. Other profiles offer more model choices and
+              may give better results, but can incur OpenRouter charges. An API key is still
+              required; free usage has limits and providers may log prompts.
             </div>
           )}
 
