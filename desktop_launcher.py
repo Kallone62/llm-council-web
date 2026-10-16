@@ -20,7 +20,7 @@ from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = 8001
-URL = f"http://localhost:{PORT}/"
+URL = f"http://localhost:{PORT}/app/"
 
 
 def frontend_dist() -> Path:
@@ -71,12 +71,13 @@ def main() -> None:
 
     # API routes are registered first. StaticFiles is mounted last, preserving
     # the existing REST/SSE interface and every React component unchanged.
-    app.mount("/", StaticFiles(directory=str(built), html=True), name="frontend")
+    app.mount("/app", StaticFiles(directory=str(built), html=True), name="frontend")
 
     print("LLM Council Web is starting...", flush=True)
     print(f"Open {URL} if the browser does not open automatically.", flush=True)
     print("Close this window to stop the local server.", flush=True)
-    threading.Thread(target=_open_browser_when_ready, daemon=True).start()
+    if os.getenv("LLM_COUNCIL_NO_BROWSER") != "1":
+        threading.Thread(target=_open_browser_when_ready, daemon=True).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 
