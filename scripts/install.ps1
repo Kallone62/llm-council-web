@@ -1,8 +1,8 @@
 # LLM Council Web: one-command, per-user Windows desktop installer.
 # Usage (after a signed/public GitHub Release is published):
-# irm https://raw.githubusercontent.com/Kallone62/llm-council-web/v1.1.0-beta.2/scripts/install.ps1 | iex
+# irm https://raw.githubusercontent.com/Kallone62/llm-council-web/v1.1.0-beta.3/scripts/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
-$version = 'v1.1.0-beta.2'
+$version = 'v1.1.0-beta.3'
 $asset = 'LLMCouncilWeb-Windows-x64.zip'
 $releaseBase = "https://github.com/Kallone62/llm-council-web/releases/download/$version"
 $target = Join-Path $env:LOCALAPPDATA 'Programs\LLMCouncilWeb'
