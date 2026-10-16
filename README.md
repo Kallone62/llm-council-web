@@ -241,6 +241,7 @@ If the app proves useful and an upstream update becomes worthwhile, the preferre
 
 ## Security
 
+- The backend listens only on `127.0.0.1:8001`; it is not a remotely hosted or authenticated API. Do not expose it through a port-forward, public reverse proxy, or `0.0.0.0` binding without adding access controls.
 - `.env` is gitignored.
 - The existing OpenRouter API key is never returned to the browser.
 - The Settings UI only reports whether a key is configured.
