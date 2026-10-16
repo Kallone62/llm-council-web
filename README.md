@@ -65,7 +65,7 @@ there is no separate logo to maintain.
 
 ## Windows desktop beta (recommended for non-developers)
 
-**Windows beta release:** [v1.1.0-beta.2](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.2) — download the Windows ZIP under **Assets**. See [Release notes](RELEASE_NOTES_v1.1.0-beta.2.md) for supported features, known limitations and third-party licensing caveats.
+**Windows beta release:** [v1.1.0-beta.3](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.3) — download the Windows ZIP under **Assets**. See [Release notes](RELEASE_NOTES_v1.1.0-beta.3.md) for supported features, known limitations and third-party licensing caveats.
 
 Windows x64 users can download `LLMCouncilWeb-Windows-x64.zip`, **extract the
 entire folder**, and double-click `LLMCouncilWeb.exe`. Keep the accompanying
@@ -90,7 +90,7 @@ version-pinned GitHub Release ZIP, verify its SHA256 digest, install it to your
 per-user AppData folder, create a desktop shortcut, and launch it:
 
 ```powershell
-irm https://raw.githubusercontent.com/Kallone62/llm-council-web/v1.1.0-beta.2/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/Kallone62/llm-council-web/v1.1.0-beta.3/scripts/install.ps1 | iex
 ```
 
 **Security:** Piping a downloaded script into `iex` executes its contents.
@@ -207,6 +207,15 @@ Free preset, rather than silently falling back to a paid model. Existing
 saved setups are not migrated automatically; selecting Free in Settings
 changes the chosen profile. Changing back to paid profiles restores the
 corresponding native Amiable model pool.
+
+**Free Chairman rate-limit recovery (beta.3):** if the primary Free Chairman
+returns a structured OpenRouter `rate_limited` error, the app retries **only
+Stage 3** using the other fixed `:free` models (at most two extra attempts).
+Stage 1 and peer-review are not repeated and Quick/other paid profiles remain
+unchanged. An exhausted account-wide quota or a temporarily unavailable free
+provider can still prevent a final synthesis; the failure is displayed clearly,
+with the completed earlier stages kept in conversation history. No automatic
+paid-model fallback or guarantee of uninterrupted free service.
 
 A full Council run makes multiple requests, so free daily quotas can be
 used quickly. For currently available models and limits see
@@ -332,7 +341,7 @@ The Amiable engine is installed as the exact PyPI dependency `llm-council-core==
 This repository intentionally pins an **exact engine release** rather than automatically tracking upstream changes.
 
 ```text
-App:    v1.1.0-beta.2
+App:    v1.1.0-beta.3
 Engine: llm-council-core==0.53.0
 ```
 
