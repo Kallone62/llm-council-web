@@ -26,11 +26,27 @@ function progressMessage(item) {
   return `${stage}: ${status}${count}${elapsed}`;
 }
 
+function FreeProfileNotice({ onOpenSettings }) {
+  return (
+    <div className="free-profile-notice" role="note">
+      <div className="free-profile-notice-text">
+        <strong>You're using Free models.</strong>{' '}
+        This is a good way to try the Council, but free models have usage limits
+        and some optional features (style normalization and extra evaluations)
+        are unavailable. Other profiles offer more model choices and may provide
+        better results, but can incur OpenRouter charges.
+      </div>
+      <button type="button" onClick={onOpenSettings}>View profiles</button>
+    </div>
+  );
+}
+
 export default function ChatInterface({
   conversation,
   onSendMessage,
   isLoading,
   apiKeyConfigured,
+  activeProfile,
   onOpenSettings,
 }) {
   const [input, setInput] = useState('');
@@ -64,6 +80,7 @@ export default function ChatInterface({
   if (!conversation) {
     return (
       <div className="chat-interface">
+        {activeProfile === 'free' && <FreeProfileNotice onOpenSettings={onOpenSettings} />}
         <div className="empty-state">
           <h2>Welcome to LLM Council</h2>
           <p>Create a new conversation to get started</p>
@@ -79,6 +96,7 @@ export default function ChatInterface({
 
   return (
     <div className="chat-interface">
+      {activeProfile === 'free' && <FreeProfileNotice onOpenSettings={onOpenSettings} />}
       <div className="messages-container">
         {conversation.messages.length === 0 ? (
           <div className="empty-state">

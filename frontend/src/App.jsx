@@ -13,6 +13,7 @@ function App() {
   const [view, setView] = useState('chat');
   const activeConversationIdRef = useRef(null);
   const [apiKeyConfigured, setApiKeyConfigured] = useState(null);
+  const [activeProfile, setActiveProfile] = useState(null);
   const [deletingConversationId, setDeletingConversationId] = useState(null);
   const [deleteError, setDeleteError] = useState('');
   const [theme, setTheme] = useState(() => {
@@ -47,6 +48,7 @@ function App() {
     try {
       const settings = await api.getSettings();
       setApiKeyConfigured(settings.api_key_configured);
+      setActiveProfile(settings.profile);
     } catch (error) {
       console.error('Failed to load settings status:', error);
     }
@@ -277,7 +279,7 @@ function App() {
         onToggleTheme={() => setTheme((prev) => prev === 'dark' ? 'light' : 'dark')}
       />
       {view === 'settings' ? (
-        <Settings onApiKeyStatusChange={setApiKeyConfigured} />
+        <Settings onApiKeyStatusChange={setApiKeyConfigured} onProfileChange={setActiveProfile} />
       ) : (
         <ChatInterface
           key={currentConversationId || 'empty'}
@@ -285,6 +287,7 @@ function App() {
           onSendMessage={handleSendMessage}
           isLoading={isLoading}
           apiKeyConfigured={apiKeyConfigured}
+          activeProfile={activeProfile}
           onOpenSettings={() => setView('settings')}
         />
       )}

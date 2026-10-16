@@ -6,6 +6,58 @@
   background: var(--surface);
 }
 
+/* Plain, compact notice. Free stays the full 3-stage Council, but with
+   restricted model choices and optional evaluations. */
+.free-profile-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--soft-bg);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.free-profile-notice strong {
+  color: var(--text);
+}
+
+.free-profile-notice-text {
+  max-width: 940px;
+}
+
+.free-profile-notice button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.free-profile-notice button:hover {
+  border-color: var(--accent);
+}
+
+.free-profile-notice button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 650px) {
+  .free-profile-notice {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
 .messages-container {
   flex: 1;
   overflow-y: auto;
