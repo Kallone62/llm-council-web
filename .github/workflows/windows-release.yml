@@ -77,19 +77,20 @@ jobs:
           $proc = Start-Process -FilePath $exe -WorkingDirectory $appFolder -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           try {
             $ready = $false
-            for ($i = 0; $i -lt 120; $i++) {
+            for ($i = 0; $i -lt 40; $i++) {
               if ($proc.HasExited) { break }
               try {
-                $ui = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/app/' -TimeoutSec 2
+                $ui = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/app/' -TimeoutSec 1
                 $api = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/api/settings' -TimeoutSec 2
                 if ($ui.StatusCode -eq 200 -and $ui.Content -match 'assets/' -and $api.StatusCode -eq 200) {
                   $ready = $true
                   break
                 }
-              } catch { }
+              } catch { $lastError = $_.Exception.Message }
               Start-Sleep -Milliseconds 500
             }
             if (-not $ready) {
+              Write-Host "Last HTTP error: $lastError"
               Write-Host '---- APP STDOUT ----'
               if (Test-Path $stdout) { Get-Content $stdout -Tail 100 }
               Write-Host '---- APP STDERR ----'
