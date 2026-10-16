@@ -91,6 +91,7 @@ async def prepare_council_query(
     user_query: str,
     *,
     progress_callback: Optional[ProgressCallback] = None,
+    summary_model: Optional[str] = None,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """Return (effective Council query, optional new persisted memory).
 
@@ -99,6 +100,7 @@ async def prepare_council_query(
     OpenRouter model client to update a rolling summary. Never silently
     truncate source text or pretend a failed summarization succeeded.
     """
+    model = summary_model or SUMMARY_MODEL
     complete = _completed_exchanges(conversation.get("messages", []))
     if not complete:
         return user_query, None
@@ -135,7 +137,7 @@ async def prepare_council_query(
             ],
         }
         result = await query_model(
-            SUMMARY_MODEL,
+            model,
             [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
@@ -155,7 +157,7 @@ async def prepare_council_query(
         new_memory = {
             "summary": new_summary,
             "covered_turns": len(complete),
-            "model": SUMMARY_MODEL,
+            "model": model,
         }
         if progress_callback is not None:
             await progress_callback("completed")
