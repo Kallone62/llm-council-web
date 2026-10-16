@@ -167,6 +167,9 @@ def repair_quality_metrics(stage1: list, stage2: list, stage3: dict, metadata: d
     """
     if not isinstance(metadata, dict) or "quality_metrics" not in metadata:
         return metadata
+    if stage3.get("error_status"):
+        # Do not score a provider error as a successfully synthesized answer.
+        return {**metadata, "quality_metrics": None}
     synthesis = stage3.get("response") if isinstance(stage3, dict) else None
     if not isinstance(synthesis, str) or not synthesis:
         return metadata
