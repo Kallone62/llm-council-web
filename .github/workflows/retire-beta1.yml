@@ -1,0 +1,51 @@
+name: Retire superseded beta.1 (one-time cleanup)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/retire-beta1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  retire-obsolete-beta:
+    if: github.repository == 'Kallone62/llm-council-web'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Verify the corrected beta.2 Release and both download assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="repos/$GITHUB_REPOSITORY/releases/tags/v1.1.0-beta.2"
+          test "$(gh api "$release" --jq '.draft')" = "false"
+          test "$(gh api "$release" --jq '.prerelease')" = "true"
+          test "$(gh api "$release" --jq '[.assets[] | select(.state == "uploaded" and .name == "LLMCouncilWeb-Windows-x64.zip")] | length')" = "1"
+          test "$(gh api "$release" --jq '[.assets[] | select(.state == "uploaded" and .name == "LLMCouncilWeb-Windows-x64.zip.sha256")] | length')" = "1"
+          echo "Corrected beta.2 and both public download assets verified."
+
+      - name: Remove buggy beta.1 Release and its tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.1.0-beta.1 >/dev/null 2>&1; then
+            gh release delete v1.1.0-beta.1 --yes --cleanup-tag
+            echo "Removed obsolete beta.1 Release and tag."
+          else
+            echo "Obsolete beta.1 Release already absent."
+          fi
+
+          if gh release view v1.1.0-beta.1 >/dev/null 2>&1; then
+            echo "ERROR: beta.1 Release is still accessible" >&2
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.1.0-beta.1" >/dev/null 2>&1; then
+            echo "ERROR: beta.1 Git tag is still accessible" >&2
+            exit 1
+          fi
+          echo "Verified beta.1 Release and tag are gone."
