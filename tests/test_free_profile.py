@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend import main, storage, conversation_context
 from backend.free_profile import (
-    FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL, NATIVE_FREE_TIER,
+    FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL,
 )
 from llm_council.unified_config import get_config, reload_config
 
@@ -57,7 +57,7 @@ def _answer(answer="Free answer"):
     )
 
 
-def test_free_selection_saves_native_quick_and_exposes_free_label(free_client):
+def test_free_is_fifth_profile_without_modifying_native_high_or_quick(free_client):
     client, path = free_client
     result = _select_free(client)
     assert result["profile"] == "free"
@@ -69,13 +69,16 @@ def test_free_selection_saves_native_quick_and_exposes_free_label(free_client):
 
     import yaml
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert saved["tiers"]["default"] == NATIVE_FREE_TIER
+    assert saved["tiers"]["default"] == "high"  # The original native tier is preserved
     assert saved["council"]["models"] == list(FREE_MODELS)
     assert saved["council"]["chairman"] == FREE_CHAIRMAN
     assert saved["council"]["style_normalization"] is False
     assert saved["gateways"]["default"] == "openrouter"
     assert saved["gateways"]["fallback"]["enabled"] is False
     assert get_config().council.models == list(FREE_MODELS)
+    # Independent Quick pool remains exactly Amiable's default definition.
+    from llm_council.default_pools import default_pool_models
+    assert get_config().tiers.pools["quick"].models == default_pool_models()["quick"]
 
 
 @pytest.mark.parametrize("setting", [
@@ -189,3 +192,63 @@ def test_free_fails_closed_on_environment_model_override(free_client, monkeypatc
     assert r.status_code == 409
     assert storage.get_conversation(conv["id"])["messages"] == []
     monkeypatch.delenv("LLM_COUNCIL_CHAIRMAN", raising=False)
+
+
+@pytest.mark.parametrize("native_tier", ["quick", "balanced", "high", "reasoning"])
+def test_free_is_overlay_not_alias_of_native_tier(free_client, native_tier):
+    client, path = free_client
+    from llm_council.default_pools import default_pool_models
+    import yaml
+
+    native = default_pool_models()[native_tier]
+    initial = client.put("/api/settings", json={
+        "profile": native_tier,
+        "use_profile_models": True,
+    })
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["models"] == native
+
+    free = _select_free(client)
+    assert free["profile"] == "free"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert config["tiers"]["default"] == native_tier
+    assert get_config().tiers.default == native_tier
+    assert free["models"] == list(FREE_MODELS)
+    assert get_config().tiers.pools["quick"].models == default_pool_models()["quick"]
+
+    restored = client.put("/api/settings", json={
+        "profile": native_tier,
+        "use_profile_models": True,
+    })
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["profile"] == native_tier
+    assert restored.json()["models"] == native
+    assert restored.json()["chairman"] is None
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["tiers"]["default"] == native_tier
+
+
+def test_legacy_free_config_using_quick_is_still_recognized(free_client):
+    client, path = free_client
+    from backend.free_profile import is_free_document
+    import yaml
+
+    _select_free(client)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["tiers"]["default"] = "quick"
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    reload_config()
+    assert is_free_document(document)
+    assert client.get("/api/settings").json()["profile"] == "free"
+    # Saving Free should not rewrite even legacy native tiers.
+    _select_free(client)
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["tiers"]["default"] == "quick"
+
+
+def test_new_install_has_free_models_without_assigning_quick():
+    from pathlib import Path
+    import yaml
+    path = Path(__file__).resolve().parents[1] / "llm_council.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert raw["tiers"]["default"] == "high"
+    assert raw["council"]["models"] == list(FREE_MODELS)
+    assert raw["council"]["chairman"] == FREE_CHAIRMAN
