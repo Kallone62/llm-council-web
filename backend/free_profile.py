@@ -1,8 +1,9 @@
 """Small UI-only OpenRouter Free preset, preserving Amiable's four native tiers.
 
-The pinned engine does not have a 'free' tier. This maps the local UI preset to
-the native 'quick' tier with *explicit* zero-priced OpenRouter endpoints for
-all model calls. No Ollama dependency or engine rewrite is involved.
+The pinned engine has four native tiers. Free is a distinct application preset
+that changes only the active Council model/Chairman and Free safety options,
+while preserving whichever native tier was already selected. In particular,
+selecting Free does NOT select or redefine Quick. No engine fork or Ollama.
 """
 
 from __future__ import annotations
@@ -17,14 +18,12 @@ FREE_MODELS = (
 )
 FREE_CHAIRMAN = FREE_MODELS[0]
 FREE_SUMMARY_MODEL = FREE_MODELS[0]
-NATIVE_FREE_TIER = "quick"
 
 
 def is_free_profile(config: Any) -> bool:
     """Identify the persisted Free preset from Amiable's effective settings."""
     return (
-        config.tiers.default == NATIVE_FREE_TIER
-        and list(config.council.models) == list(FREE_MODELS)
+        list(config.council.models) == list(FREE_MODELS)
         and config.council.chairman == FREE_CHAIRMAN
     )
 
@@ -34,15 +33,11 @@ def is_free_document(document: dict) -> bool:
     sections = document.get("council")
     # Old envelope syntax: top-level council contains a nested council block.
     if isinstance(sections, dict) and isinstance(sections.get("council"), dict):
-        tiers = sections.get("tiers", {})
         council = sections["council"]
     else:
-        tiers = document.get("tiers", {})
         council = sections if isinstance(sections, dict) else {}
     return (
-        isinstance(tiers, dict)
-        and tiers.get("default") == NATIVE_FREE_TIER
-        and council.get("models") == list(FREE_MODELS)
+        council.get("models") == list(FREE_MODELS)
         and council.get("chairman") == FREE_CHAIRMAN
     )
 

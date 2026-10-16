@@ -65,7 +65,7 @@ there is no separate logo to maintain.
 
 ## Windows desktop beta (recommended for non-developers)
 
-**Windows beta release:** [v1.1.0-beta.1](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.1) — download the Windows ZIP under **Assets**. See [Release notes](RELEASE_NOTES_v1.1.0-beta.1.md) for supported features, known limitations and third-party licensing caveats.
+**Windows beta release:** [v1.1.0-beta.2](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.2) — download the Windows ZIP under **Assets**. See [Release notes](RELEASE_NOTES_v1.1.0-beta.2.md) for supported features, known limitations and third-party licensing caveats.
 
 Windows x64 users can download `LLMCouncilWeb-Windows-x64.zip`, **extract the
 entire folder**, and double-click `LLMCouncilWeb.exe`. Keep the accompanying
@@ -90,7 +90,7 @@ version-pinned GitHub Release ZIP, verify its SHA256 digest, install it to your
 per-user AppData folder, create a desktop shortcut, and launch it:
 
 ```powershell
-irm https://raw.githubusercontent.com/Kallone62/llm-council-web/v1.1.0-beta.1/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/Kallone62/llm-council-web/v1.1.0-beta.2/scripts/install.ps1 | iex
 ```
 
 **Security:** Piping a downloaded script into `iex` executes its contents.
@@ -186,8 +186,12 @@ token charge at the time of this release, but use limited quotas and can be
 rate-limited, unavailable, or withdrawn. Do not promise unlimited free usage.
 Provider privacy policies differ; avoid sending sensitive data to free models.
 
-Free is an **application-level preset mapped to Amiable's existing
-`quick` tier**, not an extra native engine tier. The exact preset is:
+Free is a **fifth, independent application-level profile**, not an alias
+of Quick. Amiable's pinned engine validates only four native tiers, so the
+Free model pool and Chairman are kept separate from those native pools.
+Selecting Free **does not change the current native tier** (which the engine
+still uses for timeouts); selecting Quick restores Amiable's original Quick
+model pool. No upstream engine code is patched. The exact preset is:
 - Council: `google/gemma-4-31b-it:free`,
   `qwen/qwen3.8-27b:free`,
   `nvidia/nemotron-3-super-120b-a12b:free`
@@ -328,7 +332,7 @@ The Amiable engine is installed as the exact PyPI dependency `llm-council-core==
 This repository intentionally pins an **exact engine release** rather than automatically tracking upstream changes.
 
 ```text
-App:    v1.1.0-beta.1
+App:    v1.1.0-beta.2
 Engine: llm-council-core==0.53.0
 ```
 

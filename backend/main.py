@@ -28,7 +28,7 @@ from . import config as app_config
 from . import storage
 from .conversation_context import ContextSummaryError, prepare_council_query
 from .free_profile import (
-    FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL, NATIVE_FREE_TIER,
+    FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL,
     is_free_document, is_free_profile, safe_local_title,
 )
 from . import engine_runtime
@@ -44,7 +44,7 @@ engine_runtime.install_stage_hooks()
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.1.0-beta.1"
+APP_VERSION = "1.1.0-beta.2"
 PROFILE_NAMES = ("free", "quick", "balanced", "high", "reasoning")
 NATIVE_PROFILE_NAMES = ("quick", "balanced", "high", "reasoning")
 
@@ -336,7 +336,10 @@ async def update_settings(request: SettingsUpdateRequest):
     )
 
     tiers_section = sections.setdefault("tiers", {})
-    tiers_section["default"] = NATIVE_FREE_TIER if free else request.profile
+    # Free is an app-level overlay: keep the user's native tier unchanged.
+    # Amiable has no 'free' tier; Quick/other native pools must be untouched.
+    if not free:
+        tiers_section["default"] = request.profile
 
     council_section["models"] = models
     if free:
