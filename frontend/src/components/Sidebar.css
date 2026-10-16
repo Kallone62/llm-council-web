@@ -220,3 +220,19 @@
     opacity: 1;
   }
 }
+
+/* Keep Karpathy's compact header while adding the canonical app mark. */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.sidebar-brand img {
+  display: block;
+  flex: 0 0 30px;
+  border-radius: 7px;
+}
+.sidebar-brand h1 {
+  margin: 0;
+}

@@ -91,13 +91,14 @@ def _ensure_local_port_available() -> None:
 def _start_tray(server):
     """Windows system tray: open the app or exit without a terminal window."""
     import pystray
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
-    image = Image.new("RGB", (64, 64), "#192638")
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((6, 6, 57, 57), radius=13, fill="#31527b")
-    for x, color in [(20, "#8ef6d9"), (32, "#ffffff"), (44, "#8ef6d9")]:
-        draw.ellipse((x - 6, 25, x + 6, 37), fill=color)
+    # Use the exact same user-provided SVG, rasterized during packaging.
+    tray_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "brand" / "icon-64.png"
+    if not tray_path.is_file():
+        raise RuntimeError(f"Packaged LLM Council tray icon is missing: {tray_path}")
+    with Image.open(tray_path) as source:
+        image = source.convert("RGBA")
 
     def open_app(_icon, _item):
         webbrowser.open(URL)

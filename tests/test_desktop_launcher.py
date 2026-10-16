@@ -15,16 +15,29 @@ def test_desktop_log_path_is_user_writable(tmp_path, monkeypatch):
     assert path.parent.is_dir()
 
 
-def test_tray_open_and_quit_actions_work_without_cmd(monkeypatch):
+def test_tray_open_and_quit_actions_work_without_cmd(monkeypatch, tmp_path):
     callbacks = {}
-    state = {"opened": None, "ran": False, "stopped": False}
+    state = {"opened": None, "ran": False, "stopped": False, "logo_used": None}
 
-    class FakeDraw:
-        def rounded_rectangle(self, *_args, **_kwargs):
-            pass
+    logo = tmp_path / "brand" / "icon-64.png"
+    logo.parent.mkdir()
+    logo.write_bytes(b"SVG-derived image")
+    monkeypatch.setattr(desktop_launcher.sys, "_MEIPASS", str(tmp_path), raising=False)
 
-        def ellipse(self, *_args, **_kwargs):
-            pass
+    class FakePng:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def convert(self, mode):
+            assert mode == "RGBA"
+            return "branded tray icon"
+
+    def fake_open(path):
+        state["logo_used"] = path
+        return FakePng()
 
     class FakeTrayIcon:
         def __init__(self, name, image, title, menu):
@@ -48,8 +61,7 @@ def test_tray_open_and_quit_actions_work_without_cmd(monkeypatch):
         )[1],
     )
     fake_pil = SimpleNamespace(
-        Image=SimpleNamespace(new=lambda *_args, **_kwargs: object()),
-        ImageDraw=SimpleNamespace(Draw=lambda _img: FakeDraw()),
+        Image=SimpleNamespace(open=fake_open),
     )
     monkeypatch.setitem(sys.modules, "pystray", fake_pystray)
     monkeypatch.setitem(sys.modules, "PIL", fake_pil)
@@ -61,6 +73,7 @@ def test_tray_open_and_quit_actions_work_without_cmd(monkeypatch):
     server = SimpleNamespace(should_exit=False)
     icon = desktop_launcher._start_tray(server)
     assert state["ran"] is True
+    assert state["logo_used"] == logo
     callbacks["Open LLM Council"](icon, None)
     assert state["opened"] == "http://localhost:8001/app/"
     callbacks["Quit LLM Council"](icon, None)
@@ -76,3 +89,24 @@ def test_windows_release_workflow_builds_gui_subsystem():
     assert "PyInstaller --noconfirm --clean --onedir --windowed" in workflow
     assert "Assert EXE is a Windows GUI application (no console)" in workflow
     assert "LLM_COUNCIL_NO_TRAY: '1'" in workflow
+
+
+def test_original_svg_is_used_in_browser_and_windows_build():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "frontend" / "public" / "llm-council.svg").read_text(
+        encoding="utf-8"
+    )
+    html = (root / "frontend" / "index.html").read_text(encoding="utf-8")
+    sidebar = (root / "frontend" / "src" / "components" / "Sidebar.jsx").read_text(
+        encoding="utf-8"
+    )
+    workflow = (root / ".github" / "workflows" / "windows-release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert 'viewBox="0 0 256 256"' in source
+    assert 'fill="url(#core)"' in source
+    assert '%BASE_URL%llm-council.svg' in html
+    assert 'llm-council.svg' in sidebar
+    assert '--icon "build/brand/LLMCouncilWeb.ico"' in workflow
+    assert '--add-data "build/brand/icon-64.png;brand"' in workflow
+    assert 'scripts/build_desktop_icon.py' in workflow

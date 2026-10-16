@@ -18,7 +18,10 @@ export default function Sidebar({
   return (
     <div className="sidebar">
       <div className="sidebar-header">
-        <h1>LLM Council</h1>
+        <div className="sidebar-brand">
+          <img src={`${import.meta.env.BASE_URL}llm-council.svg`} width="30" height="30" alt="" aria-hidden="true" />
+          <h1>LLM Council</h1>
+        </div>
         <button className="new-conversation-btn" onClick={onNewConversation}>
           + New Conversation
         </button>

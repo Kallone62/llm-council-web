@@ -53,6 +53,16 @@ The app keeps Amiable's richer metadata instead of reducing it to the original s
 - **One-click Windows launcher** and optional desktop shortcut
 - Pinned `llm-council-core==0.53.0`; no automatic upstream updater
 
+## Application icon
+
+The original user-provided vector logo is the **single source of truth** at
+[`frontend/public/llm-council.svg`](frontend/public/llm-council.svg).
+It appears as the browser favicon and in the original Karpathy-style sidebar.
+The Windows packaging workflow rasterizes that SVG without redesigning it and
+uses its output for a multi-resolution EXE/desktop shortcut `.ico` and
+the system tray icon. Windows assets are automatically created during CI;
+there is no separate logo to maintain.
+
 ## Windows desktop beta (recommended for non-developers)
 
 **Planned GitHub Release:** [v1.1.0-beta.1](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.1) (link becomes active when the beta is published after rights and packaging validation)
