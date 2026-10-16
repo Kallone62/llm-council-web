@@ -7,7 +7,10 @@ export default function Stage3({ finalResponse, verdict }) {
   }
 
   const model = finalResponse.model || 'unknown';
-  const failed = Boolean(finalResponse.error_status);
+  // Old beta conversations may have persisted native error text without an
+  // error_status field. Never present those as a successful final answer.
+  const failed = Boolean(finalResponse.error_status)
+    || /^Error: Unable to generate final synthesis/i.test(finalResponse.response || '');
 
   return (
     <div className={`stage stage3 ${failed ? 'stage3-failed' : ''}`}>

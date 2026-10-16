@@ -52,20 +52,44 @@ async def emit_progress(stage: str, state: str, **details: Any) -> None:
             logger.warning("Could not deliver council progress", exc_info=True)
 
 
-async def _run_free_stage3_with_fallback(original: Callable, *args, **kwargs):
-    """Retry only failed Stage 3 synthesis with another *known free* Chairman.
+def _retryable_free_chairman_failure(result: tuple) -> bool:
+    """Retry only known free-provider/routing failures, not auth or code errors.
 
-    Calls Amiable's original Stage 3 for every attempt, retaining its verdict
-    prompt, parsing, token accounting and native result format. A context-local
-    Chairman override prevents simultaneous sessions from sharing mutations.
-    We never ask the engine to rerun costly Stage 1 or Stage 2.
+    Amiable 0.53.0 maps gateway HTTP 404/5xx to a generic 'error' status while
+    preserving the HTTP status code in error_detail. A failed :free endpoint
+    can therefore be retryable even though it is not a 429 rate limit.
     """
-    result = await original(*args, **kwargs)
-    if result[0].get("error_status") != "rate_limited":
-        return result
+    response = result[0]
+    status = response.get("error_status")
+    if status == "rate_limited":
+        return True
+    if status != "error":
+        return False
+    detail = str(response.get("error_detail") or "")
+    # Only provider HTTP errors. Auth, billing, invalid payloads and arbitrary
+    # exceptions must not trigger another API request.
+    import re
+    return bool(re.search(r"\b(?:404|50[0-9]|51[0-9]|52[0-9]|53[0-9])\b", detail))
 
+
+async def _run_free_stage3_with_fallback(original: Callable, *args, **kwargs):
+    """Retry only Amiable's native Stage 3 using fixed zero-priced Chairmen.
+
+    Do not repeat Stage 1/2, change Amiable's tier/model pools, or route to a
+    paid API. In particular, continue after a rate-limited primary and a
+    provider-404 secondary rather than treating that 404 as a successful final
+    synthesis. The Chairman override is local to this asyncio task.
+    """
     primary = council._get_chairman_model()
     alternatives = [model for model in FREE_MODELS if model != primary]
+    result = await original(*args, **kwargs)
+    attempts = [{
+        "model": result[0].get("model", primary),
+        "status": result[0].get("error_status", "ok"),
+    }]
+    if not _retryable_free_chairman_failure(result):
+        return result
+
     for model in alternatives:
         await emit_progress("stage3", "retrying", model=model)
         await asyncio.sleep(FREE_CHAIRMAN_RETRY_PAUSE_SECONDS)
@@ -74,19 +98,28 @@ async def _run_free_stage3_with_fallback(original: Callable, *args, **kwargs):
             result = await original(*args, **kwargs)
         finally:
             _chairman_override.reset(token)
-        if result[0].get("error_status") != "rate_limited":
+        attempts.append({
+            "model": result[0].get("model", model),
+            "status": result[0].get("error_status", "ok"),
+        })
+        # A successful synthesis is a success; non-retryable errors also stop
+        # to avoid hiding credential, billing, or prompt problems.
+        if not _retryable_free_chairman_failure(result):
             return result
 
     failed, usage, verdict = result
     failed = {
         **failed,
         "response": (
-            "Free Chairman is temporarily unavailable: all configured free "
-            "models were rate-limited. Please wait for OpenRouter's limits "
-            "to reset and try again. Stage 1 and Stage 2 results are saved."
+            "Free Chairman could not generate the final answer. The available "
+            "free models were rate-limited or returned provider errors. "
+            "Please wait and try again; an account-wide daily limit cannot "
+            "be bypassed by changing the model. Stage 1 and Stage 2 results "
+            "are saved."
         ),
-        "error_detail": "All free Chairman candidates were rate-limited.",
+        "error_detail": "No available Free Chairman succeeded.",
         "free_fallback_exhausted": True,
+        "free_chairman_attempts": attempts,
     }
     return failed, usage, verdict
 
