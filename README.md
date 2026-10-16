@@ -40,7 +40,7 @@ The app keeps Amiable's richer metadata instead of reducing it to the original s
 
 - Familiar **Karpathy-style web interface**
 - Direct use of Amiable's `run_full_council()` engine — no duplicate council algorithm
-- **Quick / Balanced / High / Reasoning** model profiles
+- **Free / Quick / Balanced / High / Reasoning** model profiles
 - Custom council model selection and custom OpenRouter model IDs
 - **Auto or manual Chairman** selection
 - Consensus / debate behavior controls
@@ -107,8 +107,8 @@ remain separate unless manually migrated. The local backend binds to
 
 The EXE is a packaging layer, not a rewrite of Karpathy's frontend or Amiable's
 engine. You still need your own OpenRouter API key (set it in **Settings**), and
-model requests may incur OpenRouter charges. Start with the **Quick** profile
-if you want to limit cost. The automated Windows smoke test does not make paid
+model requests may incur OpenRouter charges. Start with the **Free** profile
+if you want to try zero-priced OpenRouter endpoints within rate limits. The automated Windows smoke test does not make paid
 model calls. This is a **beta**, not a claim that all provider/model combinations
 have been exhaustively tested. See [NOTICE.md](NOTICE.md) for third-party
 attribution and licensing limitations.
@@ -139,7 +139,7 @@ The launcher will automatically:
 5. start the frontend on `http://localhost:5173`;
 6. open the app in your browser.
 
-On first use, open **Settings** and save your OpenRouter API key.
+On first use, open **Settings** and save your OpenRouter API key. The first-install default is **Free**; no payment is needed for available free model requests within OpenRouter's rate limits.
 
 To stop the app:
 
@@ -177,6 +177,38 @@ npm run dev
 
 Open `http://localhost:5173`.
 
+## Free profile (zero-priced OpenRouter endpoints)
+
+New installations start with the **Free** preset, without installing Ollama.
+The app still **requires the user to create and paste their own OpenRouter API
+key in Settings**. OpenRouter free-model endpoints have no prompt/completion
+token charge at the time of this release, but use limited quotas and can be
+rate-limited, unavailable, or withdrawn. Do not promise unlimited free usage.
+Provider privacy policies differ; avoid sending sensitive data to free models.
+
+Free is an **application-level preset mapped to Amiable's existing
+`quick` tier**, not an extra native engine tier. The exact preset is:
+- Council: `google/gemma-4-31b-it:free`,
+  `qwen/qwen3.8-27b:free`,
+  `nvidia/nemotron-3-super-120b-a12b:free`
+- Chairman and conversation-memory summarizer:
+  `google/gemma-4-31b-it:free`
+- Conversation titles: deterministic local text (no extra LLM call)
+- Native style normalization and optional evaluation disabled; model and
+  Chairman are fixed. OpenRouter gateway failover is disabled to avoid
+  rerouting free requests to a possibly paid provider.
+
+Requests stop if effective engine configuration overrides would break the
+Free preset, rather than silently falling back to a paid model. Existing
+saved setups are not migrated automatically; selecting Free in Settings
+changes the chosen profile. Changing back to paid profiles restores the
+corresponding native Amiable model pool.
+
+A full Council run makes multiple requests, so free daily quotas can be
+used quickly. For currently available models and limits see
+https://openrouter.ai/collections/free-models and
+https://openrouter.ai/pricing .
+
 ## Follow-up conversations
 
 After the first Council result, the message composer stays available in the
@@ -201,8 +233,9 @@ mid-sentence**, conversation context is prepared as follows:
 
 An AI summary is a *lossy, fallible interpretation*, not guaranteed perfect
 recall. For important decisions, refer to the full earlier answers retained in
-the local JSON. Summarization incurs a separate OpenRouter model call and
-charge when needed, in addition to any new three-stage Council run. OpenRouter
+the local JSON. Summarization incurs a separate OpenRouter model call when needed. In Free
+mode it uses the free Chairman endpoint; in other profiles it may have a
+charge, in addition to any new three-stage Council run. OpenRouter
 cost metadata from the full Council run does not automatically include the
 separate memory-summarization charge.
 
@@ -225,7 +258,7 @@ llm_council.yaml   -> models, chairman, council/evaluation/cache settings
 
 The UI intentionally exposes the settings that are most useful to non-developer users. Advanced Amiable options can still be edited directly in `llm_council.yaml`.
 
-### Default High profile in this release
+### High profile models (when selected)
 
 - `openai/gpt-5.6-sol`
 - `anthropic/claude-opus-5`

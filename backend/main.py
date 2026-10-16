@@ -27,6 +27,10 @@ from pydantic import BaseModel, Field, field_validator
 from . import config as app_config
 from . import storage
 from .conversation_context import ContextSummaryError, prepare_council_query
+from .free_profile import (
+    FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL, NATIVE_FREE_TIER,
+    is_free_document, is_free_profile, safe_local_title,
+)
 from . import engine_runtime
 
 from llm_council.council import run_full_council
@@ -41,7 +45,8 @@ engine_runtime.install_stage_hooks()
 logger = logging.getLogger(__name__)
 
 APP_VERSION = "1.0.0"
-PROFILE_NAMES = ("quick", "balanced", "high", "reasoning")
+PROFILE_NAMES = ("free", "quick", "balanced", "high", "reasoning")
+NATIVE_PROFILE_NAMES = ("quick", "balanced", "high", "reasoning")
 
 app = FastAPI(title="LLM Council API")
 
@@ -89,7 +94,7 @@ class Conversation(BaseModel):
 class SettingsUpdateRequest(BaseModel):
     """Small, stable subset of Amiable settings exposed in the local UI."""
 
-    profile: Literal["quick", "balanced", "high", "reasoning"] = "high"
+    profile: Literal["free", "quick", "balanced", "high", "reasoning"] = "high"
     use_profile_models: bool = True
     models: List[str] = Field(default_factory=list)
     chairman: Optional[str] = None
@@ -150,6 +155,46 @@ def _api_key_configured() -> bool:
     return bool(value and value != "your_openrouter_api_key_here")
 
 
+def _free_run_guard() -> bool:
+    """Refuse paid overrides/fallbacks when a saved Free preset was selected.
+
+    A free OpenRouter model slug alone is not sufficient if an environment
+    override replaces it or if gateway failover routes it to a paid provider.
+    """
+    document = app_config.read_council_config_document()
+    if not is_free_document(document):
+        return False
+    cfg = get_config()
+    if (
+        not is_free_profile(cfg)
+        or cfg.council.style_normalization is not False
+        or cfg.council.chairman_disabled
+        or cfg.evaluation.rubric.enabled
+        or cfg.evaluation.bias.audit_enabled
+        or cfg.evaluation.safety.enabled
+        or cfg.gateways.default != "openrouter"
+        or cfg.gateways.fallback.enabled
+        or any(model in cfg.gateways.model_routing for model in FREE_MODELS)
+        or any(
+            model in cfg.gateways.model_name_map.get("openrouter", {})
+            for model in FREE_MODELS
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Free profile has a conflicting engine or environment override. "
+                   "Check Settings before running Council.",
+        )
+    if not _api_key_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="A free OpenRouter API key is still required for Free models. "
+                   "Add it in Settings; no credit purchase is required for "
+                   "available free-tier requests.",
+        )
+    return True
+
+
 def _engine_version() -> str:
     try:
         return version("llm-council-core")
@@ -162,13 +207,15 @@ def _settings_payload() -> Dict[str, Any]:
 
     cfg = get_config()
     pools = default_pool_models()
-    profile = cfg.tiers.default if cfg.tiers.default in PROFILE_NAMES else "high"
-    profile_models = pools.get(profile, pools["high"])
+    profile = cfg.tiers.default if cfg.tiers.default in NATIVE_PROFILE_NAMES else "high"
+    if is_free_document(app_config.read_council_config_document()):
+        profile = "free"
+    profile_models = list(FREE_MODELS) if profile == "free" else pools.get(profile, pools["high"])
     current_models = list(cfg.council.models)
     use_profile_models = current_models == profile_models
 
-    available_models = set(current_models)
-    for name in PROFILE_NAMES:
+    available_models = set(current_models) | set(FREE_MODELS)
+    for name in NATIVE_PROFILE_NAMES:
         available_models.update(pools.get(name, []))
     available_models.update(TIER_AGGREGATORS.values())
     if cfg.council.chairman:
@@ -179,8 +226,9 @@ def _settings_payload() -> Dict[str, Any]:
             "models": pools.get(name, []),
             "chairman": TIER_AGGREGATORS.get(name),
         }
-        for name in PROFILE_NAMES
+        for name in NATIVE_PROFILE_NAMES
     }
+    profiles["free"] = {"models": list(FREE_MODELS), "chairman": FREE_CHAIRMAN}
 
     environment_overrides = [
         name
@@ -201,7 +249,7 @@ def _settings_payload() -> Dict[str, Any]:
         "use_profile_models": use_profile_models,
         "models": current_models,
         "chairman": cfg.council.chairman,
-        "resolved_chairman": TIER_AGGREGATORS.get(profile),
+        "resolved_chairman": FREE_CHAIRMAN if profile == "free" else TIER_AGGREGATORS.get(profile),
         "synthesis_mode": cfg.council.synthesis_mode,
         "exclude_self_votes": cfg.council.exclude_self_votes,
         "style_normalization": _style_for_api(cfg.council.style_normalization),
@@ -261,24 +309,46 @@ async def update_settings(request: SettingsUpdateRequest):
     if not request.use_profile_models and not request.models:
         raise HTTPException(status_code=422, detail="Select at least one council model")
 
+    if request.profile == "free":
+        if (
+            not request.use_profile_models
+            or request.chairman not in (None, FREE_CHAIRMAN)
+            or request.style_normalization != "off"
+            or request.rubric_enabled
+            or request.safety_enabled
+            or request.bias_audit_enabled
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Free uses fixed zero-priced models and Chairman, with "
+                       "extra model evaluation and normalization disabled.",
+            )
+
     document = app_config.read_council_config_document()
+    previously_free = is_free_document(document)
     sections, council_section = app_config.writable_config_sections(document)
     pools = default_pool_models()
 
-    models = pools[request.profile] if request.use_profile_models else request.models
+    free = request.profile == "free"
+    models = (
+        list(FREE_MODELS) if free else
+        pools[request.profile] if request.use_profile_models else request.models
+    )
 
     tiers_section = sections.setdefault("tiers", {})
-    tiers_section["default"] = request.profile
+    tiers_section["default"] = NATIVE_FREE_TIER if free else request.profile
 
     council_section["models"] = models
-    if request.chairman:
+    if free:
+        council_section["chairman"] = FREE_CHAIRMAN
+    elif request.chairman:
         council_section["chairman"] = request.chairman
     else:
         # Missing/None means Amiable resolves the tier-matched chairman itself.
         council_section.pop("chairman", None)
     council_section["synthesis_mode"] = request.synthesis_mode
     council_section["exclude_self_votes"] = request.exclude_self_votes
-    council_section["style_normalization"] = _style_for_engine(request.style_normalization)
+    council_section["style_normalization"] = False if free else _style_for_engine(request.style_normalization)
     if request.max_reviewers is None:
         council_section.pop("max_reviewers", None)
     else:
@@ -295,6 +365,21 @@ async def update_settings(request: SettingsUpdateRequest):
 
     timeouts = sections.setdefault("timeouts", {})
     timeouts["multiplier"] = request.timeout_multiplier
+
+    if free:
+        gateways = sections.setdefault("gateways", {})
+        gateways["default"] = "openrouter"
+        gateways.setdefault("fallback", {})["enabled"] = False
+        # Never allow a free slug to be routed to another (possibly paid) API.
+        routing = gateways.setdefault("model_routing", {})
+        names = gateways.setdefault("model_name_map", {}).setdefault("openrouter", {})
+        for model in FREE_MODELS:
+            routing.pop(model, None)
+            names.pop(model, None)
+    elif previously_free:
+        # Restore Amiable's normal gateway failover when leaving our Free
+        # safety sandbox; other engine profiles keep their native behavior.
+        sections.setdefault("gateways", {}).setdefault("fallback", {})["enabled"] = True
 
     try:
         app_config.write_council_config_document(document)
@@ -363,8 +448,12 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
+    free_mode = _free_run_guard()
     try:
-        council_query, new_memory = await prepare_council_query(conversation, request.content)
+        council_query, new_memory = await prepare_council_query(
+            conversation, request.content,
+            summary_model=FREE_SUMMARY_MODEL if free_mode else None,
+        )
     except ContextSummaryError as exc:
         raise HTTPException(
             status_code=503,
@@ -375,7 +464,8 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     storage.add_user_message(conversation_id, request.content)
 
     if is_first_message:
-        title = await generate_conversation_title(request.content)
+        title = (safe_local_title(request.content) if free_mode else
+                 await generate_conversation_title(request.content))
         storage.update_conversation_title(conversation_id, title)
 
     # Direct Amiable engine call. No Karpathy-side council implementation.
@@ -419,6 +509,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
+    free_mode = _free_run_guard()
 
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue()
@@ -438,13 +529,21 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     await progress({"stage": "memory", "state": state})
 
                 council_query, new_memory = await prepare_council_query(
-                    conversation, request.content, progress_callback=memory_progress
+                    conversation, request.content, progress_callback=memory_progress,
+                    summary_model=FREE_SUMMARY_MODEL if free_mode else None,
                 )
                 if new_memory is not None:
                     storage.update_conversation_memory(conversation_id, new_memory)
                 storage.add_user_message(conversation_id, request.content)
                 if is_first_message:
-                    title_task = asyncio.create_task(generate_conversation_title(request.content))
+                    if free_mode:
+                        storage.update_conversation_title(
+                            conversation_id, safe_local_title(request.content)
+                        )
+                    else:
+                        title_task = asyncio.create_task(
+                            generate_conversation_title(request.content)
+                        )
 
                 stage1, stage2, stage3, metadata = await run_full_council(
                     council_query,
