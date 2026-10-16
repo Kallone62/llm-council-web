@@ -3,6 +3,7 @@ import { api } from '../api';
 import './Settings.css';
 
 const PROFILE_LABELS = {
+  free: 'Free (OpenRouter)',
   quick: 'Quick',
   balanced: 'Balanced',
   high: 'High',
@@ -10,6 +11,7 @@ const PROFILE_LABELS = {
 };
 
 const PROFILE_HELP = {
+  free: 'Free-tier models only. Requires an OpenRouter API key; daily limits and availability apply.',
   quick: 'Fastest and cheapest profile for simple questions.',
   balanced: 'Good quality with lower latency and cost.',
   high: 'Full council quality. Recommended default.',
@@ -60,6 +62,7 @@ export default function Settings({ onApiKeyStatusChange }) {
     }
   };
 
+  const isFree = draft?.profile === 'free';
   const profileInfo = draft?.options?.profiles?.[draft.profile];
   const effectiveModels = draft?.use_profile_models
     ? profileInfo?.models || []
@@ -71,6 +74,23 @@ export default function Settings({ onApiKeyStatusChange }) {
     (draft.models || []).forEach((model) => values.add(model));
     return Array.from(values).sort();
   }, [draft]);
+
+  const changeProfile = (profile) => {
+    setDraft((prev) => ({
+      ...prev,
+      profile,
+      use_profile_models: true,
+      chairman: null,
+      ...(profile === 'free' ? {
+        style_normalization: 'off',
+        rubric_enabled: false,
+        safety_enabled: false,
+        bias_audit_enabled: false,
+      } : {}),
+    }));
+    setNotice('');
+    setError('');
+  };
 
   const update = (key, value) => {
     setDraft((prev) => ({ ...prev, [key]: value }));
@@ -203,14 +223,14 @@ export default function Settings({ onApiKeyStatusChange }) {
           <div className="settings-card-title">
             <div>
               <h3>Council model profile</h3>
-              <p>Choose one of Amiable&apos;s bundled model pools for this direct council run.</p>
+              <p>Use Free to try OpenRouter&apos;s zero-priced endpoints, or select Amiable&apos;s native profiles.</p>
             </div>
           </div>
 
           <div className="settings-grid two-col">
             <label className="field-block">
               <span>Profile</span>
-              <select value={draft.profile} onChange={(e) => update('profile', e.target.value)}>
+              <select value={draft.profile} onChange={(e) => changeProfile(e.target.value)}>
                 {Object.keys(PROFILE_LABELS).map((name) => (
                   <option key={name} value={name}>
                     {PROFILE_LABELS[name]}
@@ -232,10 +252,19 @@ export default function Settings({ onApiKeyStatusChange }) {
                 <Toggle
                   checked={draft.use_profile_models}
                   onChange={(value) => update('use_profile_models', value)}
+                  disabled={isFree}
                 />
               </div>
             </div>
           </div>
+
+          {isFree && (
+            <div className="settings-warning" role="note">
+              Free uses three fixed <code>:free</code> OpenRouter models and a free Chairman.
+              No paid title or memory-summary model is called. An OpenRouter API key is still
+              required. Availability and daily request limits apply. Free providers may log prompts.
+            </div>
+          )}
 
           <div className="profile-summary">
             <div className="profile-summary-label">Active council</div>
@@ -265,7 +294,7 @@ export default function Settings({ onApiKeyStatusChange }) {
                   type="checkbox"
                   checked={(draft.models || []).includes(model)}
                   onChange={() => toggleModel(model)}
-                  disabled={draft.use_profile_models}
+                  disabled={draft.use_profile_models || isFree}
                 />
                 <span>{model}</span>
               </label>
@@ -284,9 +313,9 @@ export default function Settings({ onApiKeyStatusChange }) {
                   addCustomModel();
                 }
               }}
-              disabled={draft.use_profile_models}
+              disabled={draft.use_profile_models || isFree}
             />
-            <button type="button" onClick={addCustomModel} disabled={draft.use_profile_models}>
+            <button type="button" onClick={addCustomModel} disabled={draft.use_profile_models || isFree}>
               Add model
             </button>
           </div>
@@ -309,9 +338,10 @@ export default function Settings({ onApiKeyStatusChange }) {
               <span>Chairman</span>
               <input
                 list="known-models"
-                value={draft.chairman || ''}
+                value={isFree ? (draft.options?.profiles?.free?.chairman || '') : (draft.chairman || '')}
                 placeholder={`Auto — ${draft.options?.profiles?.[draft.profile]?.chairman || 'profile default'}`}
                 onChange={(e) => update('chairman', e.target.value)}
+                disabled={isFree}
               />
               <small>Leave blank to let Amiable choose the profile-matched chairman.</small>
             </label>
@@ -333,6 +363,7 @@ export default function Settings({ onApiKeyStatusChange }) {
               <select
                 value={draft.style_normalization}
                 onChange={(e) => update('style_normalization', e.target.value)}
+                disabled={isFree}
               >
                 <option value="off">Off</option>
                 <option value="auto">Auto</option>
@@ -380,7 +411,7 @@ export default function Settings({ onApiKeyStatusChange }) {
               <strong>Rubric scoring</strong>
               <small>Structured scoring across accuracy, relevance, completeness, conciseness and clarity.</small>
             </div>
-            <Toggle checked={draft.rubric_enabled} onChange={(v) => update('rubric_enabled', v)} />
+            <Toggle checked={draft.rubric_enabled} onChange={(v) => update('rubric_enabled', v)} disabled={isFree} />
           </div>
 
           <div className="toggle-row">
@@ -388,7 +419,7 @@ export default function Settings({ onApiKeyStatusChange }) {
               <strong>Bias audit</strong>
               <small>Checks evaluator behavior for length/position bias during the session.</small>
             </div>
-            <Toggle checked={draft.bias_audit_enabled} onChange={(v) => update('bias_audit_enabled', v)} />
+            <Toggle checked={draft.bias_audit_enabled} onChange={(v) => update('bias_audit_enabled', v)} disabled={isFree} />
           </div>
 
           <div className="toggle-row">
@@ -396,7 +427,7 @@ export default function Settings({ onApiKeyStatusChange }) {
               <strong>Safety gate</strong>
               <small>Runs Amiable&apos;s response safety check before final scoring.</small>
             </div>
-            <Toggle checked={draft.safety_enabled} onChange={(v) => update('safety_enabled', v)} />
+            <Toggle checked={draft.safety_enabled} onChange={(v) => update('safety_enabled', v)} disabled={isFree} />
           </div>
         </section>
 
@@ -451,7 +482,7 @@ export default function Settings({ onApiKeyStatusChange }) {
           <div className="settings-card-title">
             <div>
               <h3>OpenRouter</h3>
-              <p>The key is stored only in the local <code>.env</code> file and is never returned to the browser.</p>
+              <p>The key is stored only in the local <code>.env</code> file and is never returned to the browser. <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">Create a free OpenRouter API key</a> to use Free models within the provider&apos;s limits.</p>
             </div>
             <span className={`status-pill ${draft.api_key_configured ? 'ok' : 'missing'}`}>
               {draft.api_key_configured ? 'Configured' : 'Not configured'}
