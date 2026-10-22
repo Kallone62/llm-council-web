@@ -44,7 +44,7 @@ engine_runtime.install_stage_hooks()
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.1.0-beta.4"
+APP_VERSION = "1.1.0-beta.5"
 PROFILE_NAMES = ("free", "quick", "balanced", "high", "reasoning")
 NATIVE_PROFILE_NAMES = ("quick", "balanced", "high", "reasoning")
 
@@ -443,11 +443,33 @@ async def delete_conversation(conversation_id: str):
 
 
 async def _run_council_with_free_chairman_recovery(query: str, *, free_mode: bool, **kwargs):
-    """Keep Free retry state isolated to this request's native engine call."""
+    """Run the native Council, surfacing a real failure if Stage 1 returns zero."""
     token = engine_runtime.watch_free_chairman_retry(free_mode)
+    model_token = engine_runtime.watch_model_diagnostics()
     try:
-        return await run_full_council(query, **kwargs)
+        stage1, stage2, stage3, metadata = await run_full_council(query, **kwargs)
+        if not stage1:
+            diagnostics = engine_runtime.get_model_diagnostics()
+            # Native Amiable 0.53.0 returns model='error' but no error_status,
+            # so the frontend previously rendered an invented Stage 3 success.
+            stage3 = {
+                "model": "error",
+                "response": engine_runtime.no_model_response_message(diagnostics, free_mode),
+                "error_status": "no_responses",
+                "model_failures": diagnostics,
+            }
+            metadata = {
+                **(metadata or {}),
+                "status": "failed",
+                "ui_model_failures": diagnostics,
+            }
+            logger.warning(
+                "Council stopped at Stage 1: zero responses, model statuses: %s",
+                diagnostics,
+            )
+        return stage1, stage2, stage3, metadata
     finally:
+        engine_runtime.unwatch_model_diagnostics(model_token)
         engine_runtime.unwatch_free_chairman_retry(token)
 
 
