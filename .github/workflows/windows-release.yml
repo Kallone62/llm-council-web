@@ -189,24 +189,24 @@ jobs:
             LLMCouncilWeb-Windows-x64.zip.sha256
           if-no-files-found: error
 
-      - name: Publish v1.1.0-beta.4 GitHub prerelease when explicitly requested
+      - name: Publish v1.1.0-beta.5 GitHub prerelease when explicitly requested
         if: |
           github.ref == 'refs/heads/main' &&
           (
             github.event_name == 'workflow_dispatch' ||
             (
               github.event_name == 'push' &&
-              contains(github.event.head_commit.message, '[publish-beta-v1.1.0-beta.4]')
+              contains(github.event.head_commit.message, '[publish-beta-v1.1.0-beta.5]')
             )
           )
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = 'v1.1.0-beta.4'
+          $tag = 'v1.1.0-beta.5'
           $existing = gh release view $tag --json tagName 2>$null
           if ($LASTEXITCODE -eq 0) {
             throw "Release $tag already exists; refusing to replace assets silently."
           }
-          gh release create $tag "LLMCouncilWeb-Windows-x64.zip" "LLMCouncilWeb-Windows-x64.zip.sha256" --target $env:GITHUB_SHA --title "LLM Council Web v1.1.0 Beta 4 (Windows)" --prerelease --notes-file RELEASE_NOTES_v1.1.0-beta.4.md
+          gh release create $tag "LLMCouncilWeb-Windows-x64.zip" "LLMCouncilWeb-Windows-x64.zip.sha256" --target $env:GITHUB_SHA --title "LLM Council Web v1.1.0 Beta 5 (Windows)" --prerelease --notes-file RELEASE_NOTES_v1.1.0-beta.5.md
           if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed' }

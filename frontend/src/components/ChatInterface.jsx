@@ -18,7 +18,7 @@ function progressMessage(item) {
   const status = item.state === 'started' ? 'running'
     : item.state === 'completed' ? 'completed'
     : item.state;
-  const count = item.state === 'completed'
+  const count = item.state === 'completed' || item.state === 'failed'
     ? (item.responses != null ? ` · ${item.responses} responses`
       : item.reviews != null ? ` · ${item.reviews} reviews` : '')
     : '';

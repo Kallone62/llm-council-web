@@ -70,3 +70,19 @@
   margin: 8px 0 0;
   white-space: pre-wrap;
 }
+
+.stage3-model-failures {
+  margin: 12px 0 0 18px;
+  padding: 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.stage3-model-failures li {
+  margin: 4px 0;
+}
+
+.stage3-model-failures code {
+  color: var(--danger-text);
+}
