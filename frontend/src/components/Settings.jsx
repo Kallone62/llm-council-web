@@ -226,7 +226,7 @@ export default function Settings({ onApiKeyStatusChange, onProfileChange }) {
             to replace only the Free models and Chairman with the verified
             zero-priced endpoints. Your OpenRouter key and conversations stay intact.
           </div>
-        )
+        )}
 
         <section className="settings-card">
           <div className="settings-card-title">
