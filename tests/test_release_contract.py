@@ -11,7 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_beta_version_matches_download_and_notes():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     notes = (ROOT / "RELEASE_NOTES_v1.1.0-beta.5.md").read_text(encoding="utf-8")
-    assert main.APP_VERSION == "1.1.0-beta.5"
+    # The beta.6 candidate is intentionally unpublished until a real
+    # three-stage Council succeeds. The README points to beta.5, the latest
+    # *publicly released* Windows package.
+    assert main.APP_VERSION == "1.1.0-beta.6-rc.1"
     assert "releases/tag/v1.1.0-beta.5" in readme
     assert "LLMCouncilWeb-Windows-x64.zip" in notes
     assert "OpenRouter API key" in notes

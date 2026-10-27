@@ -132,6 +132,16 @@ jobs:
                     $effective = $api.Content | ConvertFrom-Json
                     if ($effective.profile -ne 'free') { throw "New-install preset must be Free, got $($effective.profile)" }
                     if ($effective.api_key_configured) { throw 'Bundled beta must not contain any API key' }
+                    $expectedFree = @('nvidia/nemotron-3.5-super-vl:free', 'dots-studio/dots-3-note-preview:free', 'cohere/north-mini-code:free')
+                    if (($effective.models -join ',') -ne ($expectedFree -join ',')) {
+                      throw "Bundled Free pool mismatch: $($effective.models -join ',')"
+                    }
+                    if ($effective.chairman -ne $expectedFree[0]) {
+                      throw "Bundled Free Chairman mismatch: $($effective.chairman)"
+                    }
+                    if ($effective.free_profile_upgrade_required) {
+                      throw 'Fresh candidate build must not require Free migration'
+                    }
                   }
                 } catch { $lastError = $_.Exception.Message }
               }

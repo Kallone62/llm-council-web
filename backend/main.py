@@ -29,7 +29,9 @@ from . import storage
 from .conversation_context import ContextSummaryError, prepare_council_query
 from .free_profile import (
     FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL,
-    is_free_document, is_free_profile, safe_local_title,
+    LEGACY_FREE_MODELS, LEGACY_FREE_CHAIRMAN,
+    is_free_document, is_free_profile, is_legacy_free_document,
+    safe_local_title,
 )
 from . import engine_runtime
 
@@ -44,7 +46,7 @@ engine_runtime.install_stage_hooks()
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.1.0-beta.5"
+APP_VERSION = "1.1.0-beta.6-rc.1"
 PROFILE_NAMES = ("free", "quick", "balanced", "high", "reasoning")
 NATIVE_PROFILE_NAMES = ("quick", "balanced", "high", "reasoning")
 
@@ -162,6 +164,13 @@ def _free_run_guard() -> bool:
     override replaces it or if gateway failover routes it to a paid provider.
     """
     document = app_config.read_council_config_document()
+    if is_legacy_free_document(document):
+        raise HTTPException(
+            status_code=409,
+            detail="The saved Free model pool has been updated. Open Settings "
+                   "and click Save settings to select the three newly verified "
+                   "free endpoints before running Council.",
+        )
     if not is_free_document(document):
         return False
     cfg = get_config()
@@ -207,12 +216,14 @@ def _settings_payload() -> Dict[str, Any]:
 
     cfg = get_config()
     pools = default_pool_models()
+    document = app_config.read_council_config_document()
+    legacy_free = is_legacy_free_document(document)
     profile = cfg.tiers.default if cfg.tiers.default in NATIVE_PROFILE_NAMES else "high"
-    if is_free_document(app_config.read_council_config_document()):
+    if is_free_document(document):
         profile = "free"
     profile_models = list(FREE_MODELS) if profile == "free" else pools.get(profile, pools["high"])
     current_models = list(cfg.council.models)
-    use_profile_models = current_models == profile_models
+    use_profile_models = current_models == profile_models or (profile == "free" and legacy_free)
 
     available_models = set(current_models) | set(FREE_MODELS)
     for name in NATIVE_PROFILE_NAMES:
@@ -247,6 +258,7 @@ def _settings_payload() -> Dict[str, Any]:
     return {
         "profile": profile,
         "use_profile_models": use_profile_models,
+        "free_profile_upgrade_required": legacy_free,
         "models": current_models,
         "chairman": cfg.council.chairman,
         "resolved_chairman": FREE_CHAIRMAN if profile == "free" else TIER_AGGREGATORS.get(profile),
@@ -312,7 +324,7 @@ async def update_settings(request: SettingsUpdateRequest):
     if request.profile == "free":
         if (
             not request.use_profile_models
-            or request.chairman not in (None, FREE_CHAIRMAN)
+            or request.chairman not in (None, FREE_CHAIRMAN, LEGACY_FREE_CHAIRMAN)
             or request.style_normalization != "off"
             or request.rubric_enabled
             or request.safety_enabled
@@ -376,7 +388,7 @@ async def update_settings(request: SettingsUpdateRequest):
         # Never allow a free slug to be routed to another (possibly paid) API.
         routing = gateways.setdefault("model_routing", {})
         names = gateways.setdefault("model_name_map", {}).setdefault("openrouter", {})
-        for model in FREE_MODELS:
+        for model in (*FREE_MODELS, *LEGACY_FREE_MODELS):
             routing.pop(model, None)
             names.pop(model, None)
     elif previously_free:
