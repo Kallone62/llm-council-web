@@ -208,14 +208,14 @@ saved setups are not migrated automatically; selecting Free in Settings
 changes the chosen profile. Changing back to paid profiles restores the
 corresponding native Amiable model pool.
 
-**Stage 1 zero-response reporting (beta.5):** when all models fail before
-peer review, the app marks the Council attempt as failed, rather than
-presenting Amiable's old `model: error` text inside a green Final Council
-Answer. The status of each attempted model (rate limit, auth, HTTP code, etc.)
-is captured from the existing native API responses, with no extra requests or
-exposure of API keys. Any existing historical zero-response messages are also
-shown as failures. This is diagnostics, **not** a way around free account
-quotas or unavailable models.
+**Stage 1 zero-response reporting:** when all models fail before peer
+review, the UI shows an explicit failure rather than a green Final Council
+Answer. **The request-status interception introduced in beta.5 has been
+rolled back on the main development branch** to restore Amiable's untouched
+model-query path; it is not yet part of a new release. Stage 1 failure
+classification is therefore intentionally generic until direct OpenRouter
+testing establishes why 404 occurred. Inspect the local application log for
+provider errors; this does not override quota or model availability limits.
 
 **Free Chairman provider-error recovery (beta.4):** if the primary Free Chairman
 returns a structured OpenRouter `rate_limited` error or a provider 404/5xx,
