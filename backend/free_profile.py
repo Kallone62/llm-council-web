@@ -10,14 +10,25 @@ from __future__ import annotations
 
 from typing import Any
 
-# Verified as :free endpoints on OpenRouter in October 2026.
+# Each new endpoint returned HTTP 200 with the user's OpenRouter key in an
+# isolated free-only probe (October 28, 2026). Providers can change any time.
 FREE_MODELS = (
+    "nvidia/nemotron-3.5-super-vl:free",
+    "dots-studio/dots-3-note-preview:free",
+    "cohere/north-mini-code:free",
+)
+FREE_CHAIRMAN = FREE_MODELS[0]
+FREE_SUMMARY_MODEL = FREE_MODELS[0]
+
+# The previously distributed beta.2–beta.5 Free preset. Retain recognition
+# only to let existing user settings upgrade safely; never query these models
+# in a new default Free configuration.
+LEGACY_FREE_MODELS = (
     "google/gemma-4-31b-it:free",
     "qwen/qwen3.8-27b:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
 )
-FREE_CHAIRMAN = FREE_MODELS[0]
-FREE_SUMMARY_MODEL = FREE_MODELS[0]
+LEGACY_FREE_CHAIRMAN = LEGACY_FREE_MODELS[0]
 
 
 def is_free_profile(config: Any) -> bool:
@@ -28,17 +39,30 @@ def is_free_profile(config: Any) -> bool:
     )
 
 
-def is_free_document(document: dict) -> bool:
-    """Detect free intent from saved YAML even if an env override defeats it."""
+def _saved_council(document: dict) -> dict:
+    """Accept both Amiable's flat and legacy envelope YAML formats."""
     sections = document.get("council")
-    # Old envelope syntax: top-level council contains a nested council block.
     if isinstance(sections, dict) and isinstance(sections.get("council"), dict):
-        council = sections["council"]
-    else:
-        council = sections if isinstance(sections, dict) else {}
+        sections = sections["council"]
+    return sections if isinstance(sections, dict) else {}
+
+
+def is_legacy_free_document(document: dict) -> bool:
+    """Recognize the old *exact* Free preset; never classify paid custom pools."""
+    council = _saved_council(document)
     return (
-        council.get("models") == list(FREE_MODELS)
-        and council.get("chairman") == FREE_CHAIRMAN
+        council.get("models") == list(LEGACY_FREE_MODELS)
+        and council.get("chairman") == LEGACY_FREE_CHAIRMAN
+    )
+
+
+def is_free_document(document: dict) -> bool:
+    """Detect Free intent in saved YAML, even across preset updates."""
+    council = _saved_council(document)
+    return (
+        (council.get("models") == list(FREE_MODELS)
+         and council.get("chairman") == FREE_CHAIRMAN)
+        or is_legacy_free_document(document)
     )
 
 
