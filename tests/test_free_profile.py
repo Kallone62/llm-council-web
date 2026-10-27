@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 from backend import main, storage, conversation_context
 from backend.free_profile import (
     FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL,
+    LEGACY_FREE_MODELS, LEGACY_FREE_CHAIRMAN,
+    is_legacy_free_document, is_free_document,
 )
 from llm_council.unified_config import get_config, reload_config
 
@@ -591,3 +593,122 @@ def test_legacy_stage3_failure_text_shown_as_error():
     source = component.read_text(encoding="utf-8")
     assert "Error: Unable to generate final synthesis" in source
     assert "stage3-failed" in source
+
+
+def test_free_pool_matches_three_actual_http_200_probe_candidates():
+    """2026-10-28 account-probe evidence, not a guarantee of later uptime."""
+    assert FREE_MODELS == (
+        "nvidia/nemotron-3.5-super-vl:free",
+        "dots-studio/dots-3-note-preview:free",
+        "cohere/north-mini-code:free",
+    )
+    assert FREE_CHAIRMAN == FREE_MODELS[0]
+    assert FREE_SUMMARY_MODEL in FREE_MODELS
+    assert not set(FREE_MODELS).intersection(LEGACY_FREE_MODELS)
+
+
+def test_saved_beta5_free_pool_is_recognized_but_blocked_until_upgrade(free_client, monkeypatch):
+    import yaml
+    client, path = free_client
+    _select_free(client)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    native_tier = document["tiers"]["default"]
+    document["council"]["models"] = list(LEGACY_FREE_MODELS)
+    document["council"]["chairman"] = LEGACY_FREE_CHAIRMAN
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    reload_config()
+    assert is_legacy_free_document(document)
+    assert is_free_document(document)
+
+    settings = client.get("/api/settings")
+    assert settings.status_code == 200
+    payload = settings.json()
+    assert payload["profile"] == "free"
+    assert payload["use_profile_models"] is True
+    assert payload["free_profile_upgrade_required"] is True
+    assert payload["options"]["profiles"]["free"]["models"] == list(FREE_MODELS)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-free-test")
+    async def no_calls(*_args, **_kwargs):
+        raise AssertionError("Legacy Free must never send requests as paid")
+    monkeypatch.setattr(main, "run_full_council", no_calls)
+    conv = client.post("/api/conversations", json={}).json()
+    url = f"/api/conversations/{conv['id']}/message"
+    blocked = client.post(url, json={"content": "Hello"})
+    assert blocked.status_code == 409
+    assert "Save settings" in blocked.json()["detail"]
+    assert storage.get_conversation(conv["id"])["messages"] == []
+
+    # Saving the existing Free selection with its formerly saved Chairman must
+    # upgrade just the Free pool; no secret, transcript, native tier, or gateway
+    # fallback into paid models is touched.
+    saved = client.put("/api/settings", json={
+        "profile": "free",
+        "use_profile_models": True,
+        "chairman": LEGACY_FREE_CHAIRMAN,
+        "style_normalization": "off",
+        "rubric_enabled": False,
+        "safety_enabled": False,
+        "bias_audit_enabled": False,
+    })
+    assert saved.status_code == 200, saved.text
+    result = saved.json()
+    assert result["profile"] == "free"
+    assert result["free_profile_upgrade_required"] is False
+    assert result["models"] == list(FREE_MODELS)
+    assert result["chairman"] == FREE_CHAIRMAN
+    assert result["api_key_configured"] is True
+    new_doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert new_doc["tiers"]["default"] == native_tier
+    assert new_doc["council"]["models"] == list(FREE_MODELS)
+    assert new_doc["council"]["chairman"] == FREE_CHAIRMAN
+    assert new_doc["gateways"]["fallback"]["enabled"] is False
+    assert storage.get_conversation(conv["id"])["messages"] == []
+
+
+@pytest.mark.parametrize("native_tier", ["quick", "balanced", "high", "reasoning"])
+def test_legacy_free_upgrade_never_overwrites_native_tiers(free_client, native_tier):
+    import yaml
+    client, path = free_client
+    before = client.put("/api/settings", json={
+        "profile": native_tier, "use_profile_models": True,
+    })
+    assert before.status_code == 200, before.text
+    from llm_council.default_pools import default_pool_models
+    native_models = default_pool_models()[native_tier]
+
+    _select_free(client)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["council"]["models"] = list(LEGACY_FREE_MODELS)
+    document["council"]["chairman"] = LEGACY_FREE_CHAIRMAN
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    reload_config()
+
+    upgraded = _select_free(client)
+    assert upgraded["profile"] == "free"
+    assert get_config().tiers.default == native_tier
+    assert get_config().tiers.pools[native_tier].models == native_models
+
+    leave = client.put("/api/settings", json={
+        "profile": native_tier, "use_profile_models": True,
+    })
+    assert leave.status_code == 200
+    assert leave.json()["models"] == native_models
+    assert leave.json()["chairman"] is None
+
+
+def test_unrelated_custom_paid_config_not_misclassified_as_free(free_client):
+    import yaml
+    client, path = free_client
+    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    doc["council"] = {
+        "models": [*LEGACY_FREE_MODELS[:2], "openai/gpt-4o"],
+        "chairman": LEGACY_FREE_CHAIRMAN,
+    }
+    path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    reload_config()
+    assert is_legacy_free_document(doc) is False
+    assert is_free_document(doc) is False
+    result = client.get("/api/settings").json()
+    assert result["profile"] != "free"
+    assert result["free_profile_upgrade_required"] is False
