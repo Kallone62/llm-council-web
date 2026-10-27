@@ -443,35 +443,28 @@ async def delete_conversation(conversation_id: str):
 
 
 async def _run_council_with_free_chairman_recovery(query: str, *, free_mode: bool, **kwargs):
-    """Run the native Council, surfacing a real failure if Stage 1 returns zero."""
+    """Execute Amiable unchanged through Stage 1, retaining Stage 3-only recovery."""
     token = engine_runtime.watch_free_chairman_retry(free_mode)
-    model_token = engine_runtime.watch_model_diagnostics()
     try:
         stage1, stage2, stage3, metadata = await run_full_council(query, **kwargs)
         if not stage1:
-            diagnostics = engine_runtime.get_model_diagnostics()
-            # Native Amiable 0.53.0 returns model='error' but no error_status,
-            # so the frontend previously rendered an invented Stage 3 success.
+            # Native Amiable returns a Stage 3-shaped error placeholder when
+            # Stage 1 has zero usable responses. Preserve an accurate UI error,
+            # but do not intercept or alter model requests to diagnose them.
             stage3 = {
                 "model": "error",
-                "response": engine_runtime.no_model_response_message(diagnostics, free_mode),
+                "response": (
+                    "No Council models returned a usable response. Check the "
+                    "OpenRouter model availability, account access and "
+                    "application logs."
+                ),
                 "error_status": "no_responses",
-                "model_failures": diagnostics,
             }
-            metadata = {
-                **(metadata or {}),
-                "status": "failed",
-                "ui_model_failures": diagnostics,
-            }
-            logger.warning(
-                "Council stopped at Stage 1: zero responses, model statuses: %s",
-                diagnostics,
-            )
+            metadata = {**(metadata or {}), "status": "failed"}
+            logger.warning("Council Stage 1 failed: zero usable model responses")
         return stage1, stage2, stage3, metadata
     finally:
-        engine_runtime.unwatch_model_diagnostics(model_token)
         engine_runtime.unwatch_free_chairman_retry(token)
-
 
 @app.post("/api/conversations/{conversation_id}/message")
 async def send_message(conversation_id: str, request: SendMessageRequest):
