@@ -191,12 +191,19 @@ of Quick. Amiable's pinned engine validates only four native tiers, so the
 Free model pool and Chairman are kept separate from those native pools.
 Selecting Free **does not change the current native tier** (which the engine
 still uses for timeouts); selecting Quick restores Amiable's original Quick
-model pool. No upstream engine code is patched. The exact preset is:
-- Council: `google/gemma-4-31b-it:free`,
-  `qwen/qwen3.8-27b:free`,
-  `nvidia/nemotron-3-super-120b-a12b:free`
+model pool. No upstream engine code is patched.
+
+**Development candidate `1.1.0-beta.6-rc.1` (not yet a GitHub Release):**
+three substitute `:free` endpoints were individually verified with the user's
+own OpenRouter API key (HTTP 200 on October 28, 2026). The full native
+Stage 1 → Stage 2 → Stage 3 Council is **not yet live-tested** with these
+models. The last publicly released beta.5 still uses the older Free pool.
+Candidate preset:
+- Council: `nvidia/nemotron-3.5-super-vl:free`,
+  `dots-studio/dots-3-note-preview:free`,
+  `cohere/north-mini-code:free`
 - Chairman and conversation-memory summarizer:
-  `google/gemma-4-31b-it:free`
+  `nvidia/nemotron-3.5-super-vl:free`
 - Conversation titles: deterministic local text (no extra LLM call)
 - Native style normalization and optional evaluation disabled; model and
   Chairman are fixed. OpenRouter gateway failover is disabled to avoid
@@ -204,9 +211,11 @@ model pool. No upstream engine code is patched. The exact preset is:
 
 Requests stop if effective engine configuration overrides would break the
 Free preset, rather than silently falling back to a paid model. Existing
-saved setups are not migrated automatically; selecting Free in Settings
-changes the chosen profile. Changing back to paid profiles restores the
-corresponding native Amiable model pool.
+beta.2–beta.5 Free YAML is detected by exact model/Chairman identity and
+treated as Free, but model requests are blocked until the user opens Settings
+and clicks **Save settings**. That replaces only the Free preset without
+changing the underlying native tier, OpenRouter API key or conversation data.
+Other custom and paid configurations are never silently migrated.
 
 **Stage 1 zero-response reporting:** when all models fail before peer
 review, the UI shows an explicit failure rather than a green Final Council
