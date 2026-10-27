@@ -219,6 +219,14 @@ export default function Settings({ onApiKeyStatusChange, onProfileChange }) {
 
         {error && <div className="settings-error">{error}</div>}
         {notice && <div className="settings-notice">{notice}</div>}
+        {draft.free_profile_upgrade_required && (
+          <div className="settings-warning" role="status">
+            <strong>Free model endpoints updated.</strong> Your saved Free preset
+            contains models that are no longer reachable. Click <strong>Save settings</strong>
+            to replace only the Free models and Chairman with the verified
+            zero-priced endpoints. Your OpenRouter key and conversations stay intact.
+          </div>
+        )
 
         <section className="settings-card">
           <div className="settings-card-title">
