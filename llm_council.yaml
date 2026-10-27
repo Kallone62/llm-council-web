@@ -2,10 +2,10 @@ tiers:
   default: high
 council:
   models:
-  - google/gemma-4-31b-it:free
-  - qwen/qwen3.8-27b:free
-  - nvidia/nemotron-3-super-120b-a12b:free
-  chairman: google/gemma-4-31b-it:free
+  - nvidia/nemotron-3.5-super-vl:free
+  - dots-studio/dots-3-note-preview:free
+  - cohere/north-mini-code:free
+  chairman: nvidia/nemotron-3.5-super-vl:free
   synthesis_mode: consensus
   exclude_self_votes: true
   style_normalization: false
