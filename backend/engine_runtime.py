@@ -10,11 +10,9 @@ from __future__ import annotations
 import contextvars
 import logging
 import asyncio
-import re
 from typing import Any, Awaitable, Callable, Optional
 
 import llm_council.council as council
-import llm_council.openrouter as openrouter
 from llm_council.quality.integration import calculate_quality_metrics
 
 from .free_profile import FREE_MODELS
@@ -30,12 +28,6 @@ _free_chairman_retry: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 _chairman_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "llm_council_web_chairman_override", default=None
-)
-_stage1_running: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "llm_council_web_stage1_running", default=False
-)
-_model_diagnostics: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
-    "llm_council_web_model_diagnostics", default=None
 )
 # Rate-limits can be account-wide; bounded rotation cannot bypass exhausted
 # quotas. Two short pauses only; do not rerun Stage 1 or Stage 2.
@@ -78,74 +70,6 @@ def _retryable_free_chairman_failure(result: tuple) -> bool:
     # exceptions must not trigger another API request.
     import re
     return bool(re.search(r"\b(?:404|50[0-9]|51[0-9]|52[0-9]|53[0-9])\b", detail))
-
-
-def wrap_model_status(original: Callable) -> Callable:
-    """Observe structured status already returned by Amiable; do not add calls.
-
-    Amiable's run_full_council uses query_model(), which discards any non-ok
-    query_model_with_status() result. Capture only a safe, request-local summary
-    during Stage 1 so failed Free runs can show the actual error categories.
-    """
-    async def wrapped(model, *args, **kwargs):
-        result = await original(model, *args, **kwargs)
-        records = _model_diagnostics.get()
-        if _stage1_running.get() and records is not None and isinstance(result, dict):
-            error = str(result.get("error") or "")
-            http_status = re.search(r"\b(?:4\d\d|5\d\d)\b", error)
-            entry = {
-                "model": model,
-                "status": result.get("status") or "error",
-            }
-            if http_status:
-                entry["http_status"] = int(http_status.group(0))
-            if isinstance(result.get("retry_after"), int):
-                entry["retry_after_seconds"] = max(0, min(result["retry_after"], 3600))
-            records.append(entry)
-        return result
-
-    wrapped._council_web_diagnostics_wrapper = True
-    return wrapped
-
-
-def watch_model_diagnostics():
-    """Return a per-request token; asyncio child tasks share the same list."""
-    return _model_diagnostics.set([])
-
-
-def get_model_diagnostics() -> list:
-    return list(_model_diagnostics.get() or [])
-
-
-def unwatch_model_diagnostics(token) -> None:
-    _model_diagnostics.reset(token)
-
-
-def no_model_response_message(diagnostics: list, free_mode: bool) -> str:
-    """Translate observed failure categories without claiming a specific cause."""
-    statuses = {item.get("status") for item in diagnostics}
-    if statuses and statuses == {"rate_limited"}:
-        return (
-            "All Council models were rate-limited. OpenRouter free-tier or "
-            "provider limits may have been reached. Try again when the limits "
-            "reset; switching Chairman cannot fix an empty Stage 1."
-        )
-    if "auth_error" in statuses:
-        return (
-            "One or more models rejected the API credentials. Verify your "
-            "OpenRouter API key in Settings and try again."
-        )
-    if any(item.get("http_status") == 404 for item in diagnostics):
-        return (
-            "No Council models responded; at least one provider returned "
-            "HTTP 404. A free model may be unavailable for this request. "
-            "Check model availability and try again later."
-        )
-    return (
-        "No Council models returned a usable response. "
-        + ("Free endpoints can be rate-limited or unavailable. " if free_mode else "")
-        + "Check your OpenRouter key, model availability and application logs."
-    )
 
 
 async def _run_free_stage3_with_fallback(original: Callable, *args, **kwargs):
@@ -204,7 +128,6 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
     """Transparent async decorator, also independently testable offline."""
     async def wrapped(*args, **kwargs):
         await emit_progress(stage, "started")
-        stage_token = _stage1_running.set(True) if stage == "stage1" else None
         try:
             if stage == "stage3" and _free_chairman_retry.get():
                 result = await _run_free_stage3_with_fallback(original, *args, **kwargs)
@@ -213,9 +136,6 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
         except BaseException:
             await emit_progress(stage, "failed")
             raise
-        finally:
-            if stage_token is not None:
-                _stage1_running.reset(stage_token)
         details = {}
         if stage == "stage1" and isinstance(result, tuple):
             details["responses"] = len(result[0])
@@ -246,10 +166,6 @@ def install_stage_hooks() -> None:
 
         context_local_chairman._council_web_free_override = True
         council._get_chairman_model = context_local_chairman
-
-    original_query = openrouter.query_model_with_status
-    if not getattr(original_query, "_council_web_diagnostics_wrapper", False):
-        openrouter.query_model_with_status = wrap_model_status(original_query)
 
     for name, stage in _STAGE_FUNCTIONS.items():
         original = getattr(council, name)
