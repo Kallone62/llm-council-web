@@ -196,10 +196,21 @@ async def query_model(
 
 
 
+def _has_cost_token_counts(usage: Dict[str, Any]) -> bool:
+    """Both billable token counts must be present and valid for a cost estimate."""
+    return all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and 0 <= value <= _MAX_TOKENS
+        for value in (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+    )
+
+
 def resolve_missing_cost(
     usage: Dict[str, Any],
     model: Optional[str],
     gateway: str = "openrouter",
+    *,
+    token_counts_known: Optional[bool] = None,
 ) -> None:
     """#694: fill an unreported cost from the registry, labelled as an estimate.
 
@@ -255,6 +266,13 @@ def resolve_missing_cost(
             # closed above.
             usage["cost_source"] = None
         if not model:
+            return
+        # Missing or malformed counts are zero-filled for token arithmetic,
+        # not evidence that a paid call cost zero. Preserve provider costs
+        # (including genuine zero) and local-zero routing independently.
+        if token_counts_known is None:
+            token_counts_known = _has_cost_token_counts(usage)
+        if not token_counts_known and gateway != "ollama":
             return
 
         from .gateway.cost_resolver import CostResolver
@@ -455,7 +473,10 @@ async def query_model_with_status(
             }
             # #694: label the provenance, and fall back to a registry estimate
             # when the provider reported nothing.
-            resolve_missing_cost(result["usage"], canonical_model, gateway=route)
+            resolve_missing_cost(
+                result["usage"], canonical_model, gateway=route,
+                token_counts_known=_has_cost_token_counts(usage),
+            )
             return result
 
     except (httpx.TimeoutException, asyncio.TimeoutError):
