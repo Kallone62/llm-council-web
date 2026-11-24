@@ -13,6 +13,9 @@ import asyncio
 from typing import Any, Awaitable, Callable, Optional
 
 import llm_council.council as council
+from llm_council.council_stages import early_consensus_enabled
+from llm_council.council_usage import _add_cost_to_usage
+from llm_council.gateway_adapter import STATUS_OK, STATUS_RATE_LIMITED, query_model_with_status
 from llm_council.quality.integration import calculate_quality_metrics
 
 from .free_profile import FREE_MODELS
@@ -29,6 +32,15 @@ _free_chairman_retry: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _chairman_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "llm_council_web_chairman_override", default=None
 )
+# Only observed Stage 1 rate limits, isolated to the guarded Free round.
+_stage1_rate_limits: contextvars.ContextVar[dict[str, int | None] | None] = (
+    contextvars.ContextVar("llm_council_web_stage1_rate_limits", default=None)
+)
+_missing_reviewers: contextvars.ContextVar[tuple[str, ...]] = (
+    contextvars.ContextVar("llm_council_web_missing_reviewers", default=())
+)
+
+
 # Rate-limits can be account-wide; bounded rotation cannot bypass exhausted
 # quotas. Two short pauses only; do not rerun Stage 1 or Stage 2.
 FREE_CHAIRMAN_RETRY_PAUSE_SECONDS = 1.0
@@ -80,9 +92,27 @@ async def _run_free_stage3_with_fallback(original: Callable, *args, **kwargs):
     provider-404 secondary rather than treating that 404 as a successful final
     synthesis. The Chairman override is local to this asyncio task.
     """
-    primary = council._get_chairman_model()
-    alternatives = [model for model in FREE_MODELS if model != primary]
-    result = await original(*args, **kwargs)
+    configured_primary = council._get_chairman_model()
+    blocked = set(_stage1_rate_limits.get() or {}) | set(_missing_reviewers.get())
+    candidates = [model for model in (configured_primary, *FREE_MODELS)
+                  if model not in blocked]
+    candidates = list(dict.fromkeys(candidates))
+    if not candidates:
+        return ({"model": configured_primary,
+                 "response": "All Free Chairman candidates are rate-limited. Please wait and try again.",
+                 "error_status": "rate_limited"},
+                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, None)
+    primary, *alternatives = candidates
+    if primary != configured_primary:
+        await emit_progress("stage3", "retrying", model=primary)
+        await asyncio.sleep(FREE_CHAIRMAN_RETRY_PAUSE_SECONDS)
+        token = _chairman_override.set(primary)
+        try:
+            result = await original(*args, **kwargs)
+        finally:
+            _chairman_override.reset(token)
+    else:
+        result = await original(*args, **kwargs)
     attempts = [{
         "model": result[0].get("model", primary),
         "status": result[0].get("error_status", "ok"),
@@ -187,6 +217,11 @@ def annotate_peer_review(stage1: list, stage2: list, stage3: dict, metadata: dic
         review["state"] = "failed"
     elif review["state"] == "completed" and len(positive) < len(stage1):
         review["state"] = "partial"
+    missing = _missing_reviewers.get()
+    if missing:
+        review["missing_reviewers"] = list(missing)
+        if review["state"] == "completed":
+            review["state"] = "partial"
     metadata["peer_review"] = review
     if (
         review["state"] in ("failed", "partial")
@@ -204,12 +239,71 @@ def _peer_metrics_unavailable(review: dict) -> bool:
     )
 
 
+async def _collect_free_stage1(user_query: str) -> tuple:
+    """Preserve native HTTP status with the compatibility path's cancellation semantics.
+
+    Amiable 0.53.0's status-aware Stage 1 uses as_completed without cancelling
+    its direct HTTP tasks when the round is cancelled. Use the same native
+    gateway/status client and usage helper, but own the task lifetime here.
+    Only the Free adapter's collection/projection is local; deliberation,
+    ranking, synthesis and model request construction stay in the engine.
+    """
+    models = list(council._get_council_models())
+    messages = [{"role": "user", "content": user_query}]
+    tasks = [asyncio.create_task(query_model_with_status(model, messages, timeout=120.0))
+             for model in models]
+    try:
+        statuses = await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    responses = []
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    limits = {}
+    for model, status in zip(models, statuses):
+        if status["status"] == STATUS_RATE_LIMITED:
+            limits[model] = status.get("retry_after")
+        if status["status"] == STATUS_OK:
+            responses.append({"model": model, "response": status.get("content") or ""})
+            model_usage = status.get("usage", {})
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                usage[key] += model_usage.get(key, 0)
+            _add_cost_to_usage(usage, model_usage, model=model)
+    _stage1_rate_limits.set(limits)
+    return responses, usage
+
+
 def wrap_stage(stage: str, original: Callable) -> Callable:
     """Transparent async decorator, also independently testable offline."""
     async def wrapped(*args, **kwargs):
         await emit_progress(stage, "started")
         try:
-            if stage == "stage3" and _free_chairman_retry.get():
+            if stage == "stage1" and _free_chairman_retry.get():
+                result = await _collect_free_stage1(*args, **kwargs)
+            elif stage == "stage2" and _free_chairman_retry.get():
+                models = kwargs.get("models")
+                if models is None:
+                    models = council._get_council_models()
+                blocked = _stage1_rate_limits.get() or {}
+                models = [model for model in models if model not in blocked]
+                if blocked:
+                    # No more calls to a rate-limited model in this round.
+                    kwargs = {**kwargs, "models": models}
+                limit = council._get_max_reviewers()
+                full_review = (limit is None or limit >= len(models)) and not early_consensus_enabled()
+                result = await original(*args, **kwargs)
+                # The compatibility review API loses HTTP status. Only infer
+                # a missing review when every reviewer was actually selected;
+                # do not label it 429 or confuse intentional sampling with failure.
+                if full_review and result[0]:
+                    candidates = {item["model"] for item in result[1].values()}
+                    received = {item["model"] for item in result[0]}
+                    _missing_reviewers.set(tuple(model for model in models
+                                                 if model in candidates and model not in received))
+            elif stage == "stage3" and _free_chairman_retry.get():
                 result = await _run_free_stage3_with_fallback(original, *args, **kwargs)
             else:
                 result = await original(*args, **kwargs)
@@ -223,9 +317,15 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
         details = {}
         if stage == "stage1" and isinstance(result, tuple):
             details["responses"] = len(result[0])
+            if _stage1_rate_limits.get():
+                details["rate_limits"] = dict(_stage1_rate_limits.get())
         elif stage == "stage2" and isinstance(result, tuple):
             details = summarize_peer_reviews(result[0], result[1])
             state = details.pop("state")
+            if _missing_reviewers.get():
+                details["missing_reviewers"] = list(_missing_reviewers.get())
+                if state == "completed":
+                    state = "partial"
             await emit_progress(stage, state, **details)
             return result
         if stage == "stage1" and details.get("responses") == 0:
@@ -262,11 +362,19 @@ def install_stage_hooks() -> None:
 
 def watch_free_chairman_retry(enabled: bool):
     """Opt in only for a fully guarded Free-profile execution."""
-    return _free_chairman_retry.set(enabled)
+    return (_free_chairman_retry.set(enabled), _stage1_rate_limits.set(None),
+            _missing_reviewers.set(()))
 
 
 def unwatch_free_chairman_retry(token) -> None:
-    _free_chairman_retry.reset(token)
+    enabled_token, limits_token, reviewers_token = token
+    _missing_reviewers.reset(reviewers_token)
+    _stage1_rate_limits.reset(limits_token)
+    _free_chairman_retry.reset(enabled_token)
+
+
+def stage1_rate_limits() -> dict:
+    return dict(_stage1_rate_limits.get() or {})
 
 
 def watch_progress(callback: ProgressCallback):
