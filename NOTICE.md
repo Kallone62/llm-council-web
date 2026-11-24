@@ -18,7 +18,7 @@ The modern council engine comes from:
 - amiable-dev — `amiable-dev/llm-council`
 - https://github.com/amiable-dev/llm-council
 - Upstream PyPI baseline: `llm-council-core==0.53.0` (source commit `7a26506ceb6ece564699c20a095215cf13f1a14b`).
-- Installed local patched package: `llm-council-core==0.53.0+eng21.1`, [immutable source](https://github.com/Kallone62/llm-council-web/tree/3955e022be0aff82ef61f53893dd12ec88909c4c). Original MIT license and upstream attribution retained; not an official Amiable release.
+- Installed local patched package: `llm-council-core==0.53.0+eng22.1`, [immutable source](https://github.com/Kallone62/llm-council-web/tree/7a598edc36932904ec236ae451ece4e1eb02cf2b). Original MIT license and upstream attribution retained; not an official Amiable release.
 
 Amiable publishes `llm-council-core` under the MIT License. This repository pins that exact package release instead of vendoring or automatically updating the engine source.
 
