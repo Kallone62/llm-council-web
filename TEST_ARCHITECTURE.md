@@ -1,6 +1,6 @@
 # LLM Council Web — Test Mimarisi ve Sürüm Kabul Standardı
 
-Durum: Önerilen hedef mimari; uygulama ve kabul testleri henüz tamamlanmış sayılmaz.
+Durum: Aşama 1 (test kapsamı denetimi ve kritik Katman 1 regresyonları) tamamlandı. Aşama 2–6 ve nihai sürüm kabulü henüz tamamlanmadı.
 Tarih: 24 Kasım 2026.
 İlgili belge: [STABILIZATION.md](STABILIZATION.md), özellikle Test ve sürüm yönetimi, P0, P1 ve P2.
 İncelenen başlangıç referansı: main `56782a17bcafc39b86b9787557daf8bc99896b10` (denetim referansı `c445a64`); Amiable Core 0.53.0.
@@ -17,7 +17,7 @@ Amaç, uygulamanın gerçekte çalıştığını, hata durumlarını doğru yön
 
 ## 2. Mevcut testlerin kapsam denetimi
 
-Envanter denetimi: main `06c38e5543d5c5ec6ecbe5b05ae9a6ccd299a167` ve İş 1.7 aday değişikliği. Aşağıdaki sınıflandırma işlevsel kabulün yerine geçmez; yeni testin CI sonucu Bölüm 11'de kaydedilir.
+Envanter denetimi: main merge commit `e21b7252dd3f518844b4aaf795043ee3a0b0e469`. Aşağıdaki sınıflandırma işlevsel kabulün yerine geçmez; CI sonuçları Bölüm 11'de kayıtlıdır.
 
 | Mevcut test veya kontrol | Gerçekte doğruladığı | Kanıtlamadığı |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ Envanter denetimi: main `06c38e5543d5c5ec6ecbe5b05ae9a6ccd299a167` ve İş 1.7 a
 | `tests/test_free_profile.py` | Katman 1: Free ayarı/guard, kontrollü Chairman retry ve özet modeli seçimi | Güncel sağlayıcı erişimi, gerçek ücret, tüm native ağ yolları ve ayar eşzamanlılığı |
 | `tests/test_conversation_context.py` | Katman 1: hafıza, cache, hata/ilerleme, mock özet ve API | Gerçek sağlayıcıyla uzun konuşma |
 | `tests/test_failed_round_memory.py` | Katman 1: error_status taşıyan Chairman hatalarının ve eski cache'in dışlanması | Eski status'süz hata metni (İş 1.7), canlı hafıza |
-| `tests/test_legacy_failed_round_memory.py` (İş 1.7 adayı) | Katman 1: status'süz legacy hata sentinelleri, v2 cache reddi, temiz yeniden özetleme | Her olası serbest metin hatası veya gerçek özetleme |
+| `tests/test_legacy_failed_round_memory.py` | Katman 1: status'süz legacy hata sentinelleri, v2 cache reddi, temiz yeniden özetleme | Her olası serbest metin hatası veya gerçek özetleme |
 | `tests/test_engine_runtime.py` | Katman 1: hook, ContextVar izolasyonu, gerçek native kalite fonksiyonunun seçilmiş kullanımı | Bütün native motor akışı |
 | `tests/test_zero_stage1_diagnostics.py` | Katman 1: zero-response REST/SSE, pass-through wrapper, kaynak/metin kontrolü | Gerçek HTTP 404/429 ve native Stage 1 |
 | `tests/test_empty_chairman.py`, `tests/test_empty_chairman_api.py` | Katman 1: boş/geçersiz sentez, kalite, verdict, REST/SSE ve kayıt | Native HTTP hata üretimi ve gerçek UI |
@@ -42,7 +42,7 @@ Envanter denetimi: main `06c38e5543d5c5ec6ecbe5b05ae9a6ccd299a167` ve İş 1.7 a
 | Windows EXE smoke ve ZIP/SHA | Headless paket readiness, Free ayar/anahtar, GUI subsystem ve paket hash | Gerçek temiz kurulum, upgrade, doğru artifact/commit bağı ve canlı Council |
 | `retire-beta1.yml` | Eski beta yönetim workflow'u; test değildir | Release kabulü |
 
-`run_full_council` yerine tuple döndüren testler ve testin ürettiği progress olayları Katman 1 sözleşme testleridir. Bunlar gerçek motorun çalıştığını kanıtlamaz. Mevcut `.github/workflows/ci.yml` Pytest, React SSR render, Node SSE ve Vite build çalıştırır; Windows workflow PowerShell smoke regresyon/mutation, depolama regresyonu, EXE build ve headless smoke çalıştırır. İş 1.1'deki readiness false-positive düzeltildi; İş 1.2–1.6'nın kanıtları Bölüm 11'dedir. Gerçek tarayıcı ve sağlayıcı kabulü henüz eklenmedi.
+`run_full_council` yerine tuple döndüren testler ve testin ürettiği progress olayları Katman 1 sözleşme testleridir. Bunlar gerçek motorun çalıştığını kanıtlamaz. Mevcut `.github/workflows/ci.yml` Pytest, React SSR render, Node SSE ve Vite build çalıştırır; Windows workflow PowerShell smoke regresyon/mutation, depolama regresyonu, EXE build ve headless smoke çalıştırır. İş 1.1'deki readiness false-positive düzeltildi; İş 1.2–1.7'nin kanıtları Bölüm 11'dedir. Gerçek tarayıcı ve sağlayıcı kabulü henüz eklenmedi.
 
 ## 3. Dört katmanlı hedef mimari
 
@@ -338,9 +338,25 @@ Beta yayını yapılmadı; mevcut release ve ürün özellikleri bu işin kapsam
 
 ### İş 1.7 — Aşama 1 nihai kapsam denetimi ve legacy hata hafızası
 
-- Durum: **Sandbox regresyon ve mutation PASS; tam repo/Windows CI bekleniyor.** Başlangıç main commit'i: `06c38e5543d5c5ec6ecbe5b05ae9a6ccd299a167`. Bölüm 2 envanteri güncellendi. Aşama 1'in kapanışı henüz onaylanmadı.
+- Durum: **TAMAMLANDI / PASS / main'e birleştirildi.** Başlangıç main commit'i: `06c38e5543d5c5ec6ecbe5b05ae9a6ccd299a167`. Bölüm 2 envanteri güncellendi; nihai doğrulama ve Aşama 1 kapanış kararı aşağıda kayıtlıdır.
 - Denetim: Bölüm 3.1/9/10 ve STABILIZATION.md ile karşılaştırıldığında, eski beta kayıtları için Stage3.jsx'in hata kabul ettiği iki native hata sentinel'inin mevcut `_completed_exchanges` tarafından başarı sayıldığı görüldü. Bu, İş 1.2'nin error_status korumasında kalan gerçek bir boşluktur. İş 1.7 yalnız bu somut kusuru ele alır. P0 gerçek provider HTTP/fiyat/route ve ayar değişimi, P1 özetleyici erişimi ve effective config, P2 eşzamanlı oturum izolasyonu Aşama 2; reddedilmiş istek/yenileme, gerçek DOM Aşama 3; Windows upgrade/rollback Aşama 4; canlı erişim Aşama 5; sürüm/yayın gate Aşama 6 kapsamındaki açık kabul işleridir. Bu maddeler tamamlandı sayılmaz; STABILIZATION.md'nin tarihsel açık kutuları topluca işaretlenmez.
 - Kök neden: eski native cevaplarda error_status olmayabiliyor. UI mevcut durumda model=error ile 'all models failed to respond' ve 'Error: Unable to generate final synthesis' ön ekini tanıyor; backend hafıza filtresi yalnız error_status kontrol ediyordu. Version 2 cache de bu hata metinlerini taşıyabilir.
 - Çözüm: mevcut UI'nın aynı iki sınırlı sentinel kontrolü backend hafıza filtresine uygulanır; normal hata tartışmalarını silmez. MEMORY_VERSION 3 ile v2 dahil eski cache kullanılmaz, kısa temiz geçmiş doğrudan aktarılır, gerektiğinde uzun geçmiş mevcut özetleme akışıyla yeniden oluşturulur. Ham konuşmalar değiştirilmez, native motor, UI ve model seçimi değişmez. Eski uzun geçmişte bir defalık ek özet isteği gerekebilir; mevcut Free guard ve özetleme hata davranışı korunur.
 - Sandbox: Python 3.13.5 / Pytest 9.0.2. Repo orijinal context SHA `6baea98384185ffa08d64b15850fb741f91c90b1`, mevcut hafıza testi SHA `c8c1667464dc1a6eb870107e93ade93fd231ab7d`, ortak conftest SHA `ad42a94ec73e6d39fde4b05034a8191906b04baa` eşleşti. Yüklenen Amiable kaynak arşivi ve gerçek repo conftest ile çalıştırıldı; harici özet çağrısı kontrollü, canlı ağ isteği yok. Arşivin dağıtılan wheel ile tam eşliği kanıtlanmadığı için pinli bağımlılıklı CI gerekli. `PYTHONPATH=/tmp/council-native/llm-council-master/src:. python -m pytest -q tests/test_legacy_failed_round_memory.py`: eski kod **5 FAIL / 2 PASS**, düzeltme **7 PASS**. Sentinel koruması kaldırıldı **5 FAIL / 2 PASS**, cache sürümü 2'ye geri alındı **2 FAIL / 5 PASS**, restore ve önceki 5 regresyon birlikte **12 PASS**. Test SHA `e9f26d743aaa8d04c2bb3cb843ac8e7aa5406d26` sabit, nihai context SHA `06753115eba26dda029c9c57bc47e00c92531409`. Önceki testler değiştirilmedi; mutation kopyaları repoya taşınmadı.
-- Sıradaki işlem: nihai head için bütün Python/frontend CI ve Windows paketli smoke PASS, SHA kontrolü ve main birleştirmesi sonrası İş 1.7 kapanışını kaydet. Aşama 1 envanter ve somut Katman 1 kusurları denetiminin nihai kararını belgele; sonraki aşamaların kabulünü geçmiş sayma. Aşama 2 başlanmadı. Yeni beta yayınlanmadı.
+- Nihai doğrulama: [Python/frontend CI #45399366133](https://github.com/Kallone62/llm-council-web/actions/runs/45399366133) **PASS** (164 Pytest, 6 React SSR render, 33 SSE testi, frontend build; 1 mevcut deprecation uyarısı). [Windows CI #45399366431](https://github.com/Kallone62/llm-council-web/actions/runs/45399366431) **PASS** (PowerShell regresyon/mutation, Windows depolama regresyonu, EXE build, GUI, paketli smoke, ZIP/SHA256, artifact yükleme); yayın adımı atlandı. Her iki çalışma `9416df02edb198aa1dff3bbd31af12e21c0bd64d` head'i için tamamlandı. Üretim/test/eski test/conftest blob SHA'ları birleştirme öncesi tekrar eşleştirildi. [PR #28](https://github.com/Kallone62/llm-council-web/pull/28), [merge commit `e21b725`](https://github.com/Kallone62/llm-council-web/commit/e21b7252dd3f518844b4aaf795043ee3a0b0e469) ile main'e birleştirildi. Test kriterleri değiştirilmedi.
+
+### Aşama 1 kapanış kararı
+
+**TAMAMLANDI (yalnız Bölüm 10, öncelik 1).** İş 1.1–1.7 main'e birleştirildi, mevcut testler Bölüm 2'de gerçek kapsamlarına göre sınıflandırıldı, tespit edilen kritik Katman 1 yanlış başarı kusurları ilgili regresyon ve negatif kontrollerle doğrulandı. Kapanış, tüm stabilizasyon sorunlarının çözüldüğü veya tüm Bölüm 3.1/9/10 hedeflerinin geçtiği anlamına gelmez. Bilinen kalan P0/P1/P2 kabul boşlukları aşağıdaki aşamalara taşınır; hiçbir zorunlu kabul kriteri kaldırılmadı.
+
+| Açık kabul konusu | Aşama |
+| --- | --- |
+| Native üç aşama ve gerçek HTTP sınırında ENG-01–12; Free güvenliği, ayar/eşzamanlılık, özetleyici ve effective config | 2 |
+| Gerçek Chromium DOM, reddedilen istek/yenileme, UI-01–14 | 3 |
+| Windows temiz kurulum, upgrade/rollback, port ve gerçek GUI kabulü | 4 |
+| Canlı OpenRouter Free erişimi ve maliyet/route kanıtı | 5 |
+| Sürüm/commit/artifact kimliği ve atlanamayan release gate | 6 |
+
+Bölüm 10'un genel tamamlanma kutuları ve Bölüm 4.4 canlı güvenlik kutuları açık kalır. Mevcut warning, eski cache için bir defalık yeniden özetleme ihtiyacı ve storage eşzamanlılık sınırı ilgili sonraki doğrulamalarda izlenir. Yeni beta yayımlanmadı.
+
+**Sıradaki iş: İş 2.1 — Controlled Integration temel senaryosu (ENG-01).** Gerçek FastAPI + uygulama adaptörü + pinli Amiable 0.53.0 native `run_full_council` ve Stage 1/2/3'ü çalıştıran deterministik HTTP fixture'ı kur. Sadece harici sağlayıcı HTTP sınırını kontrol et; native stage, model-query veya tamamlanmış Council tuple'ını mock'lama. Geçerli üç aşama çıktısı, gerçek istek kaydı, ilerleme ve kalıcı kayıt eşleşmesini doğrula; testin bozuk sağlayıcı cevabını yakaladığını negatif kontrolle göster. Sandbox/CI/merge tamamlanmadan sonraki ENG senaryosuna geçme. İş 2.1 henüz başlatılmadı; Aşama 2 kabulü açık.
