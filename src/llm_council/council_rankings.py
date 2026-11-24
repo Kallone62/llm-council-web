@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from llm_council.layer_contracts import LayerEventType, emit_layer_event
 from llm_council.voting import VotingAuthority, get_vote_weight
+from llm_council.safety_gate import SafetyCheckResult, apply_safety_gate_to_score
 
 if TYPE_CHECKING:
     from llm_council.tier_contract import TierContract
@@ -264,6 +265,8 @@ def calculate_aggregate_rankings(
     label_to_model: Dict[str, str],
     voting_authorities: Optional[Dict[str, "VotingAuthority"]] = None,
     return_shadow_votes: bool = False,
+    safety_checks: Optional[Dict[str, SafetyCheckResult]] = None,
+    safety_score_cap: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """
     Calculate aggregate rankings using Normalized Borda Count method.
@@ -290,6 +293,8 @@ def calculate_aggregate_rankings(
         voting_authorities: Optional dict mapping reviewer model IDs to VotingAuthority.
                            If None, all voters have FULL authority (backward compatible).
         return_shadow_votes: If True, include shadow_votes in result entries.
+        safety_checks: Optional native response checks, keyed by candidate model.
+        safety_score_cap: Cap for flagged normalized raw scores (0-1).
 
     Returns:
         List of dicts with model name, normalized Borda score [0,1], sorted best to worst
@@ -413,6 +418,10 @@ def calculate_aggregate_rankings(
                     # Normalize raw score to [0,1] (assuming 1-10 scale)
                     normalized_raw = _normalize_raw_score(score)
                     if normalized_raw is not None:
+                        if safety_checks and author_model in safety_checks:
+                            normalized_raw = apply_safety_gate_to_score(
+                                normalized_raw, safety_checks[author_model], safety_score_cap
+                            )
                         model_raw_scores[author_model].append(normalized_raw)
 
     # Calculate aggregates for each model

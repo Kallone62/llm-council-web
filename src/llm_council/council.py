@@ -1007,11 +1007,13 @@ async def run_full_council(
     # ADR-031: Get evaluation config from unified_config
     eval_config = get_config().evaluation
     safety_results = {}
+    safety_checks = {}
     if eval_config.safety.enabled:
         for result in stage1_results:
             model = result.get("model", "unknown")
             response = result.get("response", "")
             safety_check = check_response_safety(response)
+            safety_checks[model] = safety_check
             safety_results[model] = {
                 "passed": safety_check.passed,
                 "reason": safety_check.reason,
@@ -1019,6 +1021,10 @@ async def run_full_council(
             }
             # Add safety result to the stage1 result
             result["safety_check"] = safety_results[model]
+    safety_kwargs = (
+        {"safety_checks": safety_checks, "safety_score_cap": eval_config.safety.score_cap}
+        if safety_checks else {}
+    )
 
     # If no models responded successfully, return error
     if num_responses == 0:
@@ -1060,7 +1066,9 @@ async def run_full_council(
             responses_for_review,
             timeout=stage_timeout,  # #648: was the 120s default
         )
-        aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+        aggregate_rankings = calculate_aggregate_rankings(
+            stage2_results, label_to_model, **safety_kwargs
+        )
         # Add warning to each ranking
         for r in aggregate_rankings:
             r["note"] = "Two-model council - rankings based on single vote"
@@ -1072,7 +1080,9 @@ async def run_full_council(
             responses_for_review,
             timeout=stage_timeout,  # #648: was the 120s default
         )
-        aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+        aggregate_rankings = calculate_aggregate_rankings(
+            stage2_results, label_to_model, **safety_kwargs
+        )
 
     total_usage["stage1_5"] = stage1_5_usage
     total_usage["stage2"] = stage2_usage
