@@ -9,6 +9,8 @@ on:
       - backend/**
       - frontend/**
       - scripts/install.ps1
+      - scripts/windows/assert-smoke-settings.ps1
+      - tests/windows/test-smoke-settings.ps1
       - .github/workflows/windows-release.yml
       - llm_council.yaml
   workflow_dispatch:
@@ -36,6 +38,10 @@ jobs:
             $errors | ForEach-Object { Write-Host $_.Message }
             throw 'Installer PowerShell syntax is invalid'
           }
+
+      - name: Regression-test desktop smoke settings acceptance
+        shell: pwsh
+        run: ./tests/windows/test-smoke-settings.ps1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -127,12 +133,7 @@ jobs:
               if (-not $apiReady) {
                 try {
                   $api = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8001/api/settings' -TimeoutSec 8
-                  $apiReady = $api.StatusCode -eq 200
-                  if ($apiReady) {
-                    $effective = $api.Content | ConvertFrom-Json
-                    if ($effective.profile -ne 'free') { throw "New-install preset must be Free, got $($effective.profile)" }
-                    if ($effective.api_key_configured) { throw 'Bundled beta must not contain any API key' }
-                  }
+                  $apiReady = & ./scripts/windows/assert-smoke-settings.ps1 -Response $api
                 } catch { $lastError = $_.Exception.Message }
               }
               if ($uiReady -and $apiReady) { break }

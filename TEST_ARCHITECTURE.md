@@ -237,3 +237,21 @@ Tamamlanma ölçütleri:
 - [ ] Bütün zorunlu kapıların PASS olması şartı release workflow tarafından uygulanıyor; stabilizasyon tamamlanmadan beta yayınlanamıyor.
 
 İlerleme ve kanıtlar PR/CI run/commit/artifact referanslarıyla kayıt altına alınmalıdır. Bu belgeyi tek başına repoya eklemek yukarıdaki kutuların hiçbirini tamamlamaz.
+
+## 11. Uygulama günlüğü
+
+Her oturumda yalnızca sıradaki tek iş ele alınır. Kod değişikliği, doğrulama komutu, sonuç ve bir sonraki iş burada kaydedilir. Çalıştırılmamış test PASS olarak işaretlenmez.
+
+### Aşama 1 — Mevcut test kapsamı ve yanlış başarı kontrolleri
+
+- Kapsam sınıflandırması: Bölüm 2'deki mevcut denetim tablosu başlangıç referansıdır; mock tabanlı API testleri gerçek motor kabulü değildir.
+- **İş 1.1 — Windows smoke Settings API false-positive düzeltmesi (kod uygulandı, doğrulama bekliyor).**
+- Başlangıç commit'i: `e52257fcb0053ad1aceab0915ac0782b76541230`.
+- Değişiklik: `.github/workflows/windows-release.yml` artık `apiReady` değerini ancak HTTP 200, geçerli JSON, Free profil ve açıkça boolean false olan API key durumunun tamamı doğrulandıktan sonra true yapar. Doğrulama hatası mevcut retry/catch akışında readiness başarısı üretmez.
+- Ortak gerçek kontrol: `scripts/windows/assert-smoke-settings.ps1`. Regresyon: `tests/windows/test-smoke-settings.ps1`; geçerli durum ve HTTP 200 ile yanlış profil/anahtar, eksik alanlar, yanlış tip, bozuk JSON, HTTP hatası olmak üzere sekiz senaryo. Windows workflow bu testi EXE derlemesinden önce çalıştırır.
+- Doğrulama komutu: `pwsh -NoProfile -File tests/windows/test-smoke-settings.ps1`.
+- Durum: **PENDING** — yerel çalışma ortamında PowerShell yok; Windows CI sonucu ve paketli smoke sonucu henüz doğrulanmadı. Bu test gerçek kurulum/yükseltme veya tüm WIN-01/WIN-06 kabulünün kanıtı değildir. Bölüm 9'daki tam mutation doğrulaması da bekliyor.
+- Kanıt: `test-architecture/step-1-smoke-settings` dalındaki commit ve ilgili PR/Windows Actions çalışması; sonuç geldiğinde burada commit/run bağlantısı ve PASS/FAIL kaydedilecek.
+- **Sıradaki iş:** önce yalnız İş 1.1'in Windows regresyonu ve paketli smoke sonucunu doğrula; başarısızsa aynı işi düzelt. Ardından Aşama 1'de kalan yanıltıcı başarı kontrollerine geç. Aşama 2 başlatılmadı.
+
+Beta yayını yapılmadı; mevcut release ve ürün özellikleri bu işin kapsamı dışındadır.
