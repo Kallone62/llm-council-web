@@ -13,6 +13,7 @@ import asyncio
 from typing import Any, Awaitable, Callable, Optional
 
 import llm_council.council as council
+import llm_council.council_stages as council_stages
 from llm_council.council_stages import early_consensus_enabled
 from llm_council.council_usage import _add_cost_to_usage
 from llm_council.gateway_adapter import STATUS_OK, STATUS_RATE_LIMITED, query_model_with_status
@@ -43,6 +44,11 @@ _missing_reviewers: contextvars.ContextVar[tuple[str, ...]] = (
 
 _all_reviews_missing: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "llm_council_web_all_reviews_missing", default=False
+)
+
+
+_sampled_review_shortfall: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "llm_council_web_sampled_review_shortfall", default=0
 )
 
 
@@ -239,6 +245,11 @@ def annotate_peer_review(stage1: list, stage2: list, stage3: dict, metadata: dic
         review["missing_reviewers"] = list(missing)
         if review["state"] == "completed":
             review["state"] = "partial"
+    shortfall = _sampled_review_shortfall.get()
+    if shortfall:
+        review["missing_review_count"] = shortfall
+        if review["state"] == "completed":
+            review["state"] = "partial"
     metadata["peer_review"] = review
     if (
         review["state"] in ("failed", "partial")
@@ -312,6 +323,10 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
                 limit = council._get_max_reviewers()
                 full_review = (limit is None or limit >= len(models)) and not early_consensus_enabled()
                 result = await original(*args, **kwargs)
+                if limit is not None and limit < len(models) and not early_consensus_enabled():
+                    # Native randomly samples reviewers. We know the count but
+                    # not the identity of unsuccessful selected reviewers.
+                    _sampled_review_shortfall.set(max(0, limit - len(result[0])))
                 # The compatibility review API loses HTTP status. Only infer
                 # a missing review when every reviewer was actually selected;
                 # do not label it 429 or confuse intentional sampling with failure.
@@ -346,6 +361,10 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
                 details["missing_reviewers"] = list(_missing_reviewers.get())
                 if state == "completed":
                     state = "partial"
+            if _sampled_review_shortfall.get():
+                details["missing_review_count"] = _sampled_review_shortfall.get()
+                if state == "completed":
+                    state = "partial"
             await emit_progress(stage, state, **details)
             return result
         if stage == "stage1" and details.get("responses") == 0:
@@ -362,8 +381,37 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
     return wrapped
 
 
+def _install_unranked_verdict_guards() -> None:
+    """Native 0.53.0 verdict helpers expect numeric Borda scores, not None.
+
+    Keep the aggregate (including unranked candidates) intact. Incomplete
+    scores cannot establish a deadlock or a council-wide Borda spread.
+    Delegate all complete numeric inputs to the original native helpers.
+    """
+    original_deadlock = council.detect_deadlock
+    if not getattr(original_deadlock, "_council_web_unranked_guard", False):
+        def guarded_deadlock(scores, *args, **kwargs):
+            if any(score is None for score in scores):
+                return False
+            return original_deadlock(scores, *args, **kwargs)
+
+        guarded_deadlock._council_web_unranked_guard = True
+        council.detect_deadlock = guarded_deadlock
+
+    original_spread = council_stages.calculate_borda_spread
+    if not getattr(original_spread, "_council_web_unranked_guard", False):
+        def guarded_spread(scores):
+            if len(scores) < 2 or any(score is None for score in scores.values()):
+                return None
+            return original_spread(scores)
+
+        guarded_spread._council_web_unranked_guard = True
+        council_stages.calculate_borda_spread = guarded_spread
+
+
 def install_stage_hooks() -> None:
     """Install once, preserving Amiable Stage 3 and all native tier settings."""
+    _install_unranked_verdict_guards()
     # Amiable Stage 3 delegates to council._get_chairman_model at call-time.
     # Override only while a guarded Free execution is trying an alternate.
     original_get_chairman = council._get_chairman_model
@@ -383,11 +431,13 @@ def install_stage_hooks() -> None:
 def watch_free_chairman_retry(enabled: bool):
     """Opt in only for a fully guarded Free-profile execution."""
     return (_free_chairman_retry.set(enabled), _stage1_rate_limits.set(None),
-            _missing_reviewers.set(()), _all_reviews_missing.set(False))
+            _missing_reviewers.set(()), _all_reviews_missing.set(False),
+            _sampled_review_shortfall.set(0))
 
 
 def unwatch_free_chairman_retry(token) -> None:
-    enabled_token, limits_token, reviewers_token, all_missing_token = token
+    enabled_token, limits_token, reviewers_token, all_missing_token, shortfall_token = token
+    _sampled_review_shortfall.reset(shortfall_token)
     _all_reviews_missing.reset(all_missing_token)
     _missing_reviewers.reset(reviewers_token)
     _stage1_rate_limits.reset(limits_token)
