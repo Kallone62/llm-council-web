@@ -68,11 +68,9 @@ def review_text(models):
     }) + "\n```"
 
 
-def install_provider(monkeypatch, models, chairman, stage_timeout):
-    calls = []
-
+def deny_external_network(monkeypatch, message):
     def deny_network(*args, **kwargs):
-        pytest.fail("Unexpected external network in native profile acceptance")
+        pytest.fail(message)
 
     monkeypatch.setattr(socket, "getaddrinfo", deny_network)
     original_connect = socket.socket.connect
@@ -83,6 +81,11 @@ def install_provider(monkeypatch, models, chairman, stage_timeout):
         return original_connect(sock, address)
 
     monkeypatch.setattr(socket.socket, "connect", connect)
+
+
+def install_provider(monkeypatch, models, chairman, stage_timeout):
+    calls = []
+    deny_external_network(monkeypatch, "Unexpected external network in native profile acceptance")
 
     async def handle(_transport, request):
         assert request.method == "POST"
