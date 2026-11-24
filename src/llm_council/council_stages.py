@@ -1037,7 +1037,12 @@ async def stage3_synthesize_final(
                 for r in aggregate_rankings
             ]
         )
-        rankings_context = f"\n\nAGGREGATE RANKINGS (after excluding self-votes):\n{rankings_list}"
+        heading = "AGGREGATE RANKINGS"
+        if all(r.get("self_votes_excluded") is True for r in aggregate_rankings):
+            heading += " (after excluding self-votes)"
+        elif all(r.get("self_votes_excluded") is False for r in aggregate_rankings):
+            heading += " (including self-votes)"
+        rankings_context = f"\n\n{heading}:\n{rankings_list}"
 
     # ADR-025b: Jury Mode verdict type handling
     # For BINARY or TIE_BREAKER, use verdict-specific prompts
