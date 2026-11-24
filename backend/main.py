@@ -14,6 +14,7 @@ import os
 import logging
 import time
 import uuid
+from threading import RLock
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, List, Literal, Optional
 
@@ -195,6 +196,39 @@ def _free_run_guard() -> bool:
     return True
 
 
+# The local app uses one process, but API callers and tests may run on different
+# threads. Reserve a whole Council round before its first await so native global
+# config (including Free routing) cannot change during that round.
+_council_state_lock = RLock()
+_active_council_runs = 0
+
+
+def _reserve_council_run() -> bool:
+    global _active_council_runs
+    with _council_state_lock:
+        free_mode = _free_run_guard()
+        _active_council_runs += 1
+        return free_mode
+
+
+def _release_council_run() -> None:
+    global _active_council_runs
+    with _council_state_lock:
+        _active_council_runs -= 1
+
+
+def _update_when_idle(update):
+    # Settings and the API key affect native, process-global provider requests.
+    # Reject changes rather than ever silently switching a running Free round.
+    with _council_state_lock:
+        if _active_council_runs:
+            raise HTTPException(
+                status_code=409,
+                detail="Settings cannot be changed while a Council round is running.",
+            )
+        return update()
+
+
 def _engine_version() -> str:
     try:
         return version("llm-council-core")
@@ -304,6 +338,11 @@ async def get_settings():
 
 @app.put("/api/settings")
 async def update_settings(request: SettingsUpdateRequest):
+    """Persist settings only when no Council is using native global config."""
+    return _update_when_idle(lambda: _save_settings(request))
+
+
+def _save_settings(request: SettingsUpdateRequest):
     """Persist UI settings to Amiable YAML and hot-reload the engine config."""
 
     if not request.use_profile_models and not request.models:
@@ -395,6 +434,11 @@ async def update_settings(request: SettingsUpdateRequest):
 
 @app.put("/api/settings/openrouter-key")
 async def update_openrouter_key(request: ApiKeyUpdateRequest):
+    """Do not change a running Council\u0027s provider credentials."""
+    return _update_when_idle(lambda: _save_openrouter_key(request))
+
+
+def _save_openrouter_key(request: ApiKeyUpdateRequest):
     """Store the local OpenRouter key without ever returning it to the browser."""
 
     value = request.api_key.strip()
@@ -501,52 +545,55 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
-    free_mode = _free_run_guard()
+    free_mode = _reserve_council_run()
     try:
-        council_query, new_memory = await prepare_council_query(
-            conversation, request.content,
-            summary_model=FREE_SUMMARY_MODEL if free_mode else None,
+        try:
+            council_query, new_memory = await prepare_council_query(
+                conversation, request.content,
+                summary_model=FREE_SUMMARY_MODEL if free_mode else None,
+            )
+        except ContextSummaryError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not prepare AI conversation memory. Please retry.",
+            ) from exc
+        if new_memory is not None:
+            storage.update_conversation_memory(conversation_id, new_memory)
+        storage.add_user_message(conversation_id, request.content)
+
+        if is_first_message:
+            title = (safe_local_title(request.content) if free_mode else
+                     await generate_conversation_title(request.content))
+            storage.update_conversation_title(conversation_id, title)
+
+        # Direct Amiable engine call. No Karpathy-side council implementation.
+        stage1_results, stage2_results, stage3_result, metadata = await _run_council_with_free_chairman_recovery(
+            council_query,
+            free_mode=free_mode,
+            verdict_type=_verdict_type(request),
+            include_dissent=request.include_dissent,
+            per_model_timeout=_stage_timeout_seconds(),
         )
-    except ContextSummaryError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Could not prepare AI conversation memory. Please retry.",
-        ) from exc
-    if new_memory is not None:
-        storage.update_conversation_memory(conversation_id, new_memory)
-    storage.add_user_message(conversation_id, request.content)
 
-    if is_first_message:
-        title = (safe_local_title(request.content) if free_mode else
-                 await generate_conversation_title(request.content))
-        storage.update_conversation_title(conversation_id, title)
+        metadata = engine_runtime.repair_quality_metrics(stage1_results, stage2_results, stage3_result, metadata)
 
-    # Direct Amiable engine call. No Karpathy-side council implementation.
-    stage1_results, stage2_results, stage3_result, metadata = await _run_council_with_free_chairman_recovery(
-        council_query,
-        free_mode=free_mode,
-        verdict_type=_verdict_type(request),
-        include_dissent=request.include_dissent,
-        per_model_timeout=_stage_timeout_seconds(),
-    )
+        storage.add_assistant_message(
+            conversation_id,
+            stage1_results,
+            stage2_results,
+            stage3_result,
+            metadata,
+        )
 
-    metadata = engine_runtime.repair_quality_metrics(stage1_results, stage2_results, stage3_result, metadata)
+        return {
+            "stage1": stage1_results,
+            "stage2": stage2_results,
+            "stage3": stage3_result,
+            "metadata": metadata,
+        }
 
-    storage.add_assistant_message(
-        conversation_id,
-        stage1_results,
-        stage2_results,
-        stage3_result,
-        metadata,
-    )
-
-    return {
-        "stage1": stage1_results,
-        "stage2": stage2_results,
-        "stage3": stage3_result,
-        "metadata": metadata,
-    }
-
+    finally:
+        _release_council_run()
 
 @app.post("/api/conversations/{conversation_id}/message/stream")
 async def send_message_stream(conversation_id: str, request: SendMessageRequest):
@@ -563,7 +610,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
-    free_mode = _free_run_guard()
+    free_mode = _reserve_council_run()
 
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue()
@@ -670,13 +717,16 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     break
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:
-            # Browser disconnects cancel expensive model requests promptly.
-            if not runner.done():
-                runner.cancel()
-                try:
-                    await runner
-                except asyncio.CancelledError:
-                    pass
+            try:
+                # Browser disconnects cancel expensive model requests promptly.
+                if not runner.done():
+                    runner.cancel()
+                    try:
+                        await runner
+                    except asyncio.CancelledError:
+                        pass
+            finally:
+                _release_council_run()
 
     return StreamingResponse(
         event_generator(),
