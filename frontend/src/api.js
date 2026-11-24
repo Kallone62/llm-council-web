@@ -180,7 +180,7 @@ export const api = {
       if (resultTypes.includes(type)) {
         if (type !== resultTypes[nextStage]) throw invalid('missing, duplicate or out-of-order stage result.');
         const validData = type === 'stage3_complete'
-          ? isObject(event.data) && (typeof event.data.response === 'string' ||
+          ? isObject(event.data) && ((typeof event.data.response === 'string' && event.data.response.trim()) ||
             (typeof event.data.error_status === 'string' && event.data.error_status.trim()))
           : Array.isArray(event.data);
         if (!validData || (type !== 'stage1_complete' && !isObject(event.metadata))) {
@@ -229,6 +229,5 @@ export const api = {
     } finally {
       reader.releaseLock();
     }
-
   },
 };

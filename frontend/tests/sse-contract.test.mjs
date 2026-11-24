@@ -74,6 +74,8 @@ for (const [name, text] of [
   ['malformed event object', frames(stage1, stage2) + 'data: null\n\n' + frames(stage3, complete)],
   ['unknown event', frames(stage1, stage2, { type: 'unexpected' }, stage3, complete)],
   ['empty Stage 3 object', frames(stage1, stage2, { ...stage3, data: {} }, complete)],
+  ['blank Stage 3 without error status', frames(stage1, stage2, { ...stage3, data: { response: ' \n\t' } }, complete)],
+  ['non-string Stage 3 response', frames(stage1, stage2, { ...stage3, data: { response: 42 } }, complete)],
   ['missing stage metadata', frames(stage1, { type: 'stage2_complete', data: [] }, stage3, complete)],
   ['invalid progress', frames({ type: 'engine_progress', data: {} }, stage1, stage2, stage3, complete)],
   ['wrong stage data shape', frames({ ...stage1, data: {} }, stage2, stage3, complete)],
