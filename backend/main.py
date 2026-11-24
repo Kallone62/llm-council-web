@@ -39,6 +39,8 @@ from llm_council.council_stages import generate_conversation_title
 from llm_council.default_pools import default_pool_models
 from llm_council.tier_contract import TIER_AGGREGATORS
 from llm_council.unified_config import get_config, reload_config
+from llm_council.gateway.resolver import resolve_endpoint
+from llm_council.gateway.openrouter import OPENROUTER_API_URL
 from llm_council.verdict import VerdictType
 
 engine_runtime.install_stage_hooks()
@@ -174,6 +176,7 @@ def _free_run_guard() -> bool:
         or cfg.evaluation.bias.audit_enabled
         or cfg.evaluation.safety.enabled
         or cfg.gateways.default != "openrouter"
+        or resolve_endpoint()[0] != OPENROUTER_API_URL
         or cfg.gateways.fallback.enabled
         or any(model in cfg.gateways.model_routing for model in FREE_MODELS)
         or any(
