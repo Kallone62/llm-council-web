@@ -50,7 +50,8 @@ def provider_http(tmp_path, monkeypatch, request):
     reload_config()
     calls = []
     failed_model = getattr(request, "param", None)
-    available = {model: answer for model, answer in ANSWERS.items() if model != failed_model}
+    failed_models = set(FREE_MODELS) if failed_model == "all" else {failed_model}
+    available = {model: answer for model, answer in ANSWERS.items() if model not in failed_models}
     labels = LABELS[:len(available)]
     review_text = REVIEW_TEXT if failed_model is None else "All candidates address preservation.\n```json\n" + json.dumps({
         "ranking": labels, "scores": dict(zip(labels, [9, 8, 7])),
@@ -71,19 +72,17 @@ def provider_http(tmp_path, monkeypatch, request):
         elif "<responses_to_evaluate>" in prompt:
             stage, content = "stage2", review_text
             assert QUESTION in prompt and all(answer in prompt for answer in available.values())
-            if failed_model is not None:
-                assert ANSWERS[failed_model] not in prompt
+            assert all(ANSWERS[model] not in prompt for model in failed_models if model is not None)
         elif prompt.startswith("You are the Chairman of an LLM Council."):
             stage, content = "stage3", FINAL_TEXT
             assert model == FREE_CHAIRMAN
             assert QUESTION in prompt and all(answer in prompt for answer in available.values())
-            if failed_model is not None:
-                assert ANSWERS[failed_model] not in prompt
+            assert all(ANSWERS[model] not in prompt for model in failed_models if model is not None)
             chairman_context_matches = "AGGREGATE RANKINGS" in prompt and review_text in prompt
         else:
             pytest.fail("Unexpected provider prompt (no credentials or prompt text logged)")
         # Record no credentials or raw prompts. Native HTTP client parses the response.
-        if model == failed_model:
+        if model in failed_models:
             calls.append((stage, model, request.url.host, 404, chairman_context_matches))
             return httpx.Response(404, json={"error": {"code": 404, "message": "No endpoints found for this model"}})
         calls.append((stage, model, request.url.host, 200, chairman_context_matches))
@@ -286,3 +285,58 @@ def test_eng02_single_unavailable_model(provider_http, tmp_path, monkeypatch, st
         reloaded = client.get(f"/api/conversations/{cid}")
         assert reloaded.status_code == 200 and reloaded.json()["messages"] == persisted["messages"]
         assert metadata.get("status") == "partial"
+
+
+@pytest.mark.parametrize("provider_http", ["all"], indirect=True)
+@pytest.mark.parametrize("stream", [False, True], ids=["rest", "sse"])
+def test_eng03_all_models_unavailable(provider_http, tmp_path, monkeypatch, stream, caplog):
+    """All provider 404s must stop deliberation and persist an explicit failure."""
+    from fastapi.testclient import TestClient
+    from backend import main, storage
+
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+    assert main.run_full_council is council.run_full_council
+    with TestClient(main.app) as client:
+        created = client.post("/api/conversations", json={})
+        assert created.status_code == 200
+        cid = created.json()["id"]
+        endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
+        result = client.post(endpoint, json={"content": QUESTION})
+        assert result.status_code == 200, result.text
+        if stream:
+            assert result.headers["content-type"].startswith("text/event-stream")
+            events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+            assert [e["type"] for e in events] == ["engine_progress"] * 2 + [
+                "stage1_complete", "stage2_complete", "stage3_complete", "complete"]
+            progress = [e["data"] for e in events[:2]]
+            assert [(e["stage"], e["state"]) for e in progress] == [("stage1", "started"), ("stage1", "failed")]
+            assert progress[1]["responses"] == 0
+            stage1, stage2, stage3 = [e["data"] for e in events[2:5]]
+            metadata = events[5]["metadata"]
+            assert events[3]["metadata"] == events[4]["metadata"] == metadata
+            assert metadata["ui_runtime_progress"] == progress
+        else:
+            payload = result.json()
+            stage1, stage2, stage3, metadata = [payload[key] for key in ("stage1", "stage2", "stage3", "metadata")]
+        assert Counter(provider_http) == Counter(("stage1", model, "openrouter.ai", 404, None) for model in FREE_MODELS)
+        assert stage1 == stage2 == []
+        assert stage3["model"] == "error" and stage3["error_status"] == "no_responses"
+        assert "No Council models returned" in stage3["response"]
+        assert FINAL_TEXT not in stage3["response"]
+        assert metadata["status"] == "failed"
+        assert metadata["peer_review"]["state"] == "not_run"
+        assert metadata["peer_review"]["effective_votes"] == 0
+        assert not metadata.get("aggregate_rankings")
+        assert not metadata.get("verdict") and metadata.get("quality_metrics") is None
+        assert all(metadata["usage"][stage]["total_tokens"] == 0 for stage in ("stage1", "stage1_5", "stage2", "stage3"))
+        assert "zero usable model responses" in caplog.text
+        for model in FREE_MODELS:
+            assert any(model in record.getMessage() and "404" in record.getMessage() for record in caplog.records)
+        assert "eng-01-test-only-not-a-real-key" not in caplog.text
+        persisted = json.loads((tmp_path / "conversations" / f"{cid}.json").read_text(encoding="utf-8"))
+        assert persisted["messages"] == [
+            {"role": "user", "content": QUESTION},
+            {"role": "assistant", "stage1": [], "stage2": [], "stage3": stage3, "metadata": metadata},
+        ]
+        reloaded = client.get(f"/api/conversations/{cid}")
+        assert reloaded.status_code == 200 and reloaded.json()["messages"] == persisted["messages"]
