@@ -51,12 +51,13 @@ def provider_http(tmp_path, monkeypatch, request):
     monkeypatch.setenv("LLM_COUNCIL_CONFIG", str(config_path))
     reload_config()
     calls = []
+    quota_stage = scenario.removeprefix("quota-") if isinstance(scenario, str) and scenario.startswith("quota-") else None
     rate_stage1 = scenario in ("rate-stage1-member", "rate-stage1-chairman")
     rate_stage2 = scenario in ("rate-stage2-member", "rate-stage2-chairman")
     rate_stage3 = scenario == "rate-stage3-chairman"
     limited_model = FREE_CHAIRMAN if scenario in ("rate-stage1-chairman", "rate-stage2-chairman", "rate-stage3-chairman") else FREE_MODELS[-1]
-    failed_model = limited_model if rate_stage1 else None if rate_stage2 or rate_stage3 or scenario == "review-cap" else scenario
-    failed_models = set(FREE_MODELS) if failed_model == "all" else {failed_model}
+    failed_model = limited_model if rate_stage1 else None if rate_stage2 or rate_stage3 or quota_stage or scenario == "review-cap" else scenario
+    failed_models = set(FREE_MODELS) if failed_model == "all" or quota_stage == "stage1" else {failed_model}
     available = {model: answer for model, answer in ANSWERS.items() if model not in failed_models}
     labels = LABELS[:len(available)]
     review_text = REVIEW_TEXT if failed_model is None else "All candidates address preservation.\n```json\n" + json.dumps({
@@ -81,7 +82,7 @@ def provider_http(tmp_path, monkeypatch, request):
             assert all(ANSWERS[model] not in prompt for model in failed_models if model is not None)
         elif prompt.startswith("You are the Chairman of an LLM Council."):
             stage, content = "stage3", FINAL_TEXT
-            if not (rate_stage1 or rate_stage2 or rate_stage3):
+            if not (rate_stage1 or rate_stage2 or rate_stage3 or quota_stage):
                 assert model == FREE_CHAIRMAN
             assert QUESTION in prompt and all(answer in prompt for answer in available.values())
             assert all(ANSWERS[model] not in prompt for model in failed_models if model is not None)
@@ -89,6 +90,9 @@ def provider_http(tmp_path, monkeypatch, request):
         else:
             pytest.fail("Unexpected provider prompt (no credentials or prompt text logged)")
         # Record no credentials or raw prompts. Native HTTP client parses the response.
+        if quota_stage and int(stage[-1]) >= int(quota_stage[-1]):
+            calls.append((stage, model, request.url.host, 429, chairman_context_matches))
+            return httpx.Response(429, headers={"Retry-After": "3600"}, json={"error": {"code": 429, "message": "Daily free request quota exhausted for this account"}})
         if model == limited_model and (rate_stage1 or (rate_stage2 and stage in ("stage2", "stage3")) or (rate_stage3 and stage == "stage3")):
             calls.append((stage, model, request.url.host, 429, chairman_context_matches))
             return httpx.Response(429, headers={"Retry-After": "120"}, json={"error": {"code": 429, "message": "Model rate limited"}})
@@ -595,3 +599,77 @@ def test_eng04_cancel_stage1_closes_all_provider_requests(provider_http, monkeyp
                 await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(drive())
+
+
+@pytest.mark.parametrize("provider_http", ["quota-stage1", "quota-stage2", "quota-stage3"], indirect=True)
+@pytest.mark.parametrize("stream", [False, True], ids=["rest", "sse"])
+def test_eng05_account_quota(provider_http, request, tmp_path, monkeypatch, stream):
+    """The native status API loses quota scope; avoid claiming certainty or useless rotation."""
+    from fastapi.testclient import TestClient
+    from backend import main, storage
+
+    onset = request.node.callspec.params["provider_http"]
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+    assert main.run_full_council is council.run_full_council
+    with TestClient(main.app) as client:
+        created = client.post("/api/conversations", json={})
+        assert created.status_code == 200
+        cid = created.json()["id"]
+        endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
+        result = client.post(endpoint, json={"content": QUESTION})
+        assert result.status_code == 200, result.text
+        if stream:
+            assert result.headers["content-type"].startswith("text/event-stream")
+            events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+            assert [e["type"] for e in events[-4:]] == ["stage1_complete", "stage2_complete", "stage3_complete", "complete"]
+            assert all(e["type"] == "engine_progress" for e in events[:-4])
+            progress = [e["data"] for e in events[:-4]]
+            stage1, stage2, stage3 = [e["data"] for e in events[-4:-1]]
+            metadata = events[-1]["metadata"]
+            assert events[-3]["metadata"] == events[-2]["metadata"] == metadata
+            assert metadata["ui_runtime_progress"] == progress
+        else:
+            payload = result.json()
+            stage1, stage2, stage3, metadata = [payload[key] for key in ("stage1", "stage2", "stage3", "metadata")]
+        expected = [("stage1", model, 429 if onset == "quota-stage1" else 200) for model in FREE_MODELS]
+        if onset != "quota-stage1":
+            expected += [("stage2", model, 429 if onset == "quota-stage2" else 200) for model in FREE_MODELS]
+            expected += [("stage3", model, 429) for model in ([FREE_CHAIRMAN] if onset == "quota-stage2" else FREE_MODELS)]
+        assert Counter((stage, model, code) for stage, model, _, code, _ in provider_http) == Counter(expected)
+        assert [stage for stage, *_ in provider_http] == [stage for stage, _, _ in expected]
+        assert all(host == "openrouter.ai" for _, _, host, _, _ in provider_http)
+        assert metadata["status"] == "failed"
+        assert not metadata.get("verdict") and metadata.get("quality_metrics") is None
+        assert FINAL_TEXT not in stage3["response"]
+        assert "account" in stage3["response"].lower()
+        assert "may" in stage3["response"].lower() or "cannot" in stage3["response"].lower()
+        if onset == "quota-stage1":
+            assert stage1 == stage2 == []
+            assert stage3["error_status"] == "no_responses"
+            assert metadata["stage1_rate_limits"] == dict.fromkeys(FREE_MODELS, 3600)
+            assert metadata["peer_review"]["state"] == "not_run"
+        else:
+            assert {r["model"]: r["response"] for r in stage1} == ANSWERS
+            assert stage3["error_status"] == "rate_limited"
+            if onset == "quota-stage2":
+                assert stage2 == [] and metadata["peer_review"]["state"] == "failed"
+                assert stage3["model"] == FREE_CHAIRMAN
+                assert stage3["free_fallback_suppressed"] == "all_reviews_missing"
+            else:
+                assert len(stage2) == 3 and metadata["peer_review"]["state"] == "completed"
+                assert stage3["free_fallback_exhausted"] is True
+                assert [r["model"] for r in stage3["free_chairman_attempts"]] == list(FREE_MODELS)
+        if stream:
+            if onset == "quota-stage1":
+                assert [(e["stage"], e["state"]) for e in progress] == [("stage1", "started"), ("stage1", "failed")]
+            else:
+                assert progress[-1]["stage"] == "stage3" and progress[-1]["state"] == "failed"
+                assert sum(e["state"] == "retrying" for e in progress) == (2 if onset == "quota-stage3" else 0)
+        persisted = json.loads((tmp_path / "conversations" / f"{cid}.json").read_text(encoding="utf-8"))
+        assert persisted["messages"] == [
+            {"role": "user", "content": QUESTION},
+            {"role": "assistant", "stage1": stage1, "stage2": stage2, "stage3": stage3, "metadata": metadata},
+        ]
+        reloaded = client.get(f"/api/conversations/{cid}")
+        assert reloaded.status_code == 200 and reloaded.json()["messages"] == persisted["messages"]
+    assert council._get_chairman_model() == FREE_CHAIRMAN
