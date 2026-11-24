@@ -124,6 +124,20 @@ async def _run_free_stage3_with_fallback(original: Callable, *args, **kwargs):
     return failed, usage, verdict
 
 
+def normalize_stage3_response(stage3: dict) -> dict:
+    """Treat missing or blank synthesis as failure, preserving native errors."""
+    if stage3.get("error_status"):
+        return stage3
+    synthesis = stage3.get("response")
+    if not isinstance(synthesis, str) or not synthesis.strip():
+        return {
+            **stage3,
+            "response": "Chairman returned no usable final synthesis.",
+            "error_status": "empty_synthesis",
+        }
+    return stage3
+
+
 def wrap_stage(stage: str, original: Callable) -> Callable:
     """Transparent async decorator, also independently testable offline."""
     async def wrapped(*args, **kwargs):
@@ -133,6 +147,10 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
                 result = await _run_free_stage3_with_fallback(original, *args, **kwargs)
             else:
                 result = await original(*args, **kwargs)
+            if stage == "stage3":
+                response = normalize_stage3_response(result[0])
+                if response is not result[0]:
+                    result = (response, *result[1:])
         except BaseException:
             await emit_progress(stage, "failed")
             raise
@@ -202,12 +220,10 @@ def repair_quality_metrics(stage1: list, stage2: list, stage3: dict, metadata: d
     """
     if not isinstance(metadata, dict) or "quality_metrics" not in metadata:
         return metadata
-    if stage3.get("error_status"):
-        # Do not score a provider error as a successfully synthesized answer.
+    if normalize_stage3_response(stage3).get("error_status"):
+        # Do not score a provider error or missing synthesis as a valid answer.
         return {**metadata, "quality_metrics": None}
-    synthesis = stage3.get("response") if isinstance(stage3, dict) else None
-    if not isinstance(synthesis, str) or not synthesis:
-        return metadata
+    synthesis = stage3["response"]
     try:
         stage1_dict = {
             item["model"]: {"content": item["response"]}
