@@ -10,8 +10,10 @@ from backend import storage
 
 @pytest.fixture
 def directory(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
-    return tmp_path
+    data_dir = tmp_path / "conversations"
+    data_dir.mkdir()
+    monkeypatch.setattr(storage, "DATA_DIR", str(data_dir))
+    return data_dir
 
 
 def new_conversation():
