@@ -1,0 +1,427 @@
+"""Shared council constants and ADR-011 usage accounting (ADR-046 P0, #408).
+
+Verbatim moves from council.py; council.py re-exports these names.
+"""
+
+import logging
+import math
+from typing import Any, Awaitable, Callable, Dict, Optional
+
+from llm_council.gateway_adapter import (
+    STATUS_AUTH_ERROR,
+    STATUS_ERROR,
+    STATUS_OK,
+    STATUS_RATE_LIMITED,
+    STATUS_TIMEOUT,
+)
+from llm_council.log_safety import safe_log
+
+logger = logging.getLogger(__name__)
+
+# ADR-012: Tiered Timeout Strategy Constants
+TIMEOUT_PER_MODEL_SOFT = 15.0
+TIMEOUT_PER_MODEL_HARD = 25.0
+TIMEOUT_SYNTHESIS_TRIGGER = 40.0
+TIMEOUT_RESPONSE_DEADLINE = 50.0
+
+# #660: default budget for the fallback chairman call in `quick_synthesis`,
+# preserved at its historical hard-coded value so direct callers that pass no
+# tier context behave as before. Callers WITH a tier budget must pass it
+# explicitly — 15s is far below any tier's per-model budget, and this is the
+# only synthesis attempt on the global-timeout path.
+TIMEOUT_QUICK_SYNTHESIS = 15.0
+
+# #648: floor for the Stage 2 / Stage 3 budgets on the consult path, in SECONDS.
+# Equal to the historical hard-coded default in stage2_collect_rankings /
+# stage3_synthesize_final. Every call site converted in #648 previously OMITTED
+# the argument and so inherited exactly this value, which is what makes the
+# "can only ever RAISE a budget" claim hold — it is a statement about those
+# specific call sites, not a general property of the helper.
+TIMEOUT_STAGE_FLOOR = 120.0
+
+# #648: sanity ceiling for a stage budget, in seconds. The largest value any
+# supported configuration can produce is reasoning's 300s per-model budget at
+# the maximum LLM_COUNCIL_TIMEOUT_MULTIPLIER of 10.0 = 3000s, so anything above
+# this is a unit slip (a raw `_ms` field) rather than an intent. Rejections are
+# logged, never silent.
+_MAX_STAGE_TIMEOUT = 3600.0
+
+
+def resolve_stage_timeout(per_model_timeout: Optional[float]) -> float:
+    """#648: derive the Stage 2 / Stage 3 budget from the tier's per-model one.
+
+    Both consult orchestrators used to call ``stage2_collect_rankings`` and
+    ``stage3_synthesize_final`` without a ``timeout``, so each ran at its own
+    hard-coded 120s default no matter the tier — and
+    ``LLM_COUNCIL_TIMEOUT_MULTIPLIER`` never reached them. ADR-040 fixed the
+    same class of bug on the verify path (#545).
+
+    The tier value raises the budget; ``TIMEOUT_STAGE_FLOOR`` guarantees it can
+    never SHRINK the converted call sites below the historical default. That
+    floor is load-bearing: high tier's per-model budget is 90s and balanced's is
+    45s, so capping at ``per_model_timeout`` — the literal ADR-040 waterfall —
+    would have created fresh instances of the very timeout this fixes.
+
+    Args:
+        per_model_timeout: The per-model budget **in SECONDS**, matching
+            ``run_council_with_fallback``'s parameter of the same name.
+            ``TierContract`` stores this figure in MILLISECONDS as
+            ``per_model_timeout_ms``; callers holding a contract must divide by
+            1000, as ``facade.py`` and ``http_server.py`` do. Passing the raw
+            ``_ms`` field would produce a 300,000-second budget — i.e. silently
+            disable the stage timeout — so anything non-finite or beyond
+            ``_MAX_STAGE_TIMEOUT`` is rejected back to the floor rather than
+            trusted (a unit slip is always a bug, never a 3.5-day budget).
+
+    Returns:
+        A finite, positive budget in seconds, never below ``TIMEOUT_STAGE_FLOOR``.
+
+    Note:
+        This is a NOMINAL stage budget, not guaranteed wall-clock. The outer
+        bound stays ``synthesis_deadline``, whose global ``wait_for`` fires
+        first when it is the tighter of the two and degrades to
+        ``quick_synthesis`` rather than to a stage error string.
+    """
+    if per_model_timeout is None:
+        return TIMEOUT_STAGE_FLOOR
+    try:
+        value = float(per_model_timeout)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: float(10**400) and friends. The docstring promises a
+        # fallback for anything unusable, so the tuple must cover it (#650 gate).
+        # CWE-117 (#651): the rejected value is arbitrary by definition here,
+        # so it is CR/LF-collapsed before it reaches the log line.
+        logger.warning(
+            "non-numeric per_model_timeout %s; using the %ss stage floor",
+            safe_log(repr(per_model_timeout)),
+            TIMEOUT_STAGE_FLOOR,
+        )
+        return TIMEOUT_STAGE_FLOOR
+    # Explicit rather than incidental: NaN would propagate through max() (it
+    # compares False against everything), and a millisecond value passed by
+    # mistake would read as a multi-day budget. Both land on the floor, so the
+    # documented contract is load-bearing instead of a side effect of max().
+    if not math.isfinite(value) or value <= 0.0 or value > _MAX_STAGE_TIMEOUT:
+        # Already proven finite-or-not by float(), so no CR/LF risk here.
+        logger.warning(
+            "implausible per_model_timeout %s seconds (expected 0 < t <= %s; "
+            "a value near 1000x the tier budget means a TierContract "
+            "per_model_timeout_ms was passed without dividing by 1000); "
+            "using the %ss stage floor",
+            value,
+            _MAX_STAGE_TIMEOUT,
+            TIMEOUT_STAGE_FLOOR,
+        )
+        return TIMEOUT_STAGE_FLOOR
+    return max(value, TIMEOUT_STAGE_FLOOR)
+
+
+# ADR-012: Model Status Types (mirrors openrouter status types)
+MODEL_STATUS_OK = STATUS_OK
+MODEL_STATUS_TIMEOUT = STATUS_TIMEOUT
+MODEL_STATUS_ERROR = STATUS_ERROR
+MODEL_STATUS_RATE_LIMITED = STATUS_RATE_LIMITED
+MODEL_STATUS_AUTH_ERROR = STATUS_AUTH_ERROR
+
+# Progress callback type
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
+
+
+def _merge_cost_source(bucket: Dict[str, Any], source: Optional[str]) -> None:
+    """Accumulate cost provenance across calls.
+
+    #694: a model's stage-1 call might be provider-reported and its stage-2
+    call registry-estimated. Claiming either label for the sum would be false,
+    so disagreeing sources collapse to ``"mixed"`` and the estimated portion
+    stays separately visible in ``cost_estimated_usd``. A call with no source
+    contributes nothing rather than overwriting a known one.
+    """
+    if not source or not isinstance(source, str):
+        return
+    existing = bucket.get("cost_source")
+    if existing is None:
+        bucket["cost_source"] = source
+    elif existing != source:
+        bucket["cost_source"] = "mixed"
+    # #707: `mixed` says the sources disagreed but not WHICH were present, and
+    # the external contract has to know whether any observed part came from a
+    # provider. The set of sources seen rides alongside the collapsed label.
+    # A sorted list rather than a set, because this dict is serialised.
+    _note_cost_sources(bucket, [source])
+
+
+def _note_cost_sources(bucket: Dict[str, Any], sources: Any) -> None:
+    """Union ``sources`` into ``bucket["cost_sources"]`` (sorted, unique)."""
+    if isinstance(sources, str):  # a bare label, not a collection of them
+        sources = [sources]
+    if not isinstance(sources, (list, tuple, set, frozenset)):
+        return
+    stored = bucket.get("cost_sources")
+    seen = (
+        {stored}
+        if isinstance(stored, str)
+        else set(stored)
+        if isinstance(stored, (list, tuple, set, frozenset))
+        else set()
+    )
+    seen.update(s for s in sources if isinstance(s, str) and s != "mixed")
+    if seen:
+        bucket["cost_sources"] = sorted(seen)
+
+
+#: Sources whose figure is an observation of spend: a provider's bill, or a
+#: local model's structural zero. `registry_estimate` is known but estimated.
+OBSERVED_COST_SOURCES = ("provider", "local_zero")
+KNOWN_COST_SOURCES = OBSERVED_COST_SOURCES + ("registry_estimate",)
+
+
+def _as_number(value: Any) -> float:
+    """Coerce a provider-supplied count to a number, or 0.
+
+    #692 gate: token aggregation runs on the deliberation path, OUTSIDE the
+    soft-fail wrapper around persistence. A provider returning `null` or a
+    string for a token count would raise a TypeError and fail a consult that
+    had already completed and already been billed.
+    """
+    if isinstance(value, bool) or value is None:
+        return 0
+    # #707 gate: `math.isfinite` raises OverflowError on an int too large for a
+    # float, and JSON parses integers exactly, so a provider can send one. The
+    # conversion and the check both sit inside the guard.
+    try:
+        parsed = float(value)
+        return (value if isinstance(value, (int, float)) else parsed) if math.isfinite(parsed) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _is_usable_cost(value: Any) -> bool:
+    """A finite, non-negative number that is not a bool."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:  # an int beyond float range
+        return False
+
+
+def _add_cost_to_usage(
+    total_usage: Dict[str, Any], usage: Dict[str, Any], model: Optional[str] = None
+) -> None:
+    """ADR-011: accumulate cost_usd, cached_tokens, and optional per-model spend.
+
+    Additive to the existing token aggregation. ``usage["cost"]`` may be None
+    (provider didn't report it) and is treated as a 0 contribution. When
+    ``model`` is given, the same figures also accumulate under
+    ``total_usage["by_model"][model]`` (reviewer-primary attribution).
+    """
+    raw_cost = usage.get("cost")
+    # #707 gate: a cost is KNOWN only if it is a usable measurement. `_as_number`
+    # turns garbage (a string, NaN, a bool, a negative) into 0, and `cost_known`
+    # used to be set for anything that was not None, so a malformed figure went
+    # out as a provider-measured $0.00. Unusable is unobserved.
+    usable = _is_usable_cost(raw_cost)
+    cost = float(raw_cost) if usable and raw_cost is not None else 0.0
+    # #694: provenance rides with the figure. An estimate that cannot be told
+    # apart from a measurement is worse than no figure, because it WILL be
+    # summed with real ones. A source is recorded only for a usable figure:
+    # a label on nothing observed would claim an observation.
+    raw_source = usage.get("cost_source")
+    source = raw_source if usable and isinstance(raw_source, str) else None
+    estimated = cost if source == "registry_estimate" else 0.0
+    # #707 gate, round 3: provenance is tracked PER AMOUNT, not only as a set of
+    # labels. With labels alone, one provider-reported call made the whole sum
+    # read as provider spend, including amounts that carried no label at all.
+    # `cost_observed_usd` holds exactly the observed money; an amount council
+    # cannot attribute (no label, an unknown label, or a `local_zero` that is
+    # not zero) marks the total `cost_unattributed`, and nothing that needs
+    # provenance is reported from it.
+    attributed = source in KNOWN_COST_SOURCES and not (source == "local_zero" and cost > 0)
+    observed = cost if attributed and source in OBSERVED_COST_SOURCES else 0.0
+    # #707 gate: through `_as_number` like the primary counts. A raw `+` on a
+    # provider's string count raised TypeError here, on the deliberation path,
+    # failing a run that had already completed and been billed.
+    cached = _as_number(usage.get("cached_tokens"))
+    # ADR-049 D4: cache-write tokens ride the same aggregation; absent => 0.
+    cache_write = _as_number(usage.get("cache_write_tokens"))
+    # #707 gate: `std.external.requests` is a count of calls. It was
+    # `len(by_model)`, which counts a model reviewed in all three stages once.
+    total_usage["requests"] = total_usage.get("requests", 0) + 1
+    total_usage["cost_usd"] = total_usage.get("cost_usd", 0.0) + cost
+    total_usage["cost_estimated_usd"] = total_usage.get("cost_estimated_usd", 0.0) + estimated
+    total_usage["cost_observed_usd"] = total_usage.get("cost_observed_usd", 0.0) + observed
+    if usable and not attributed:
+        total_usage["cost_unattributed"] = True
+    _merge_cost_source(total_usage, source)
+    total_usage["cached_tokens"] = total_usage.get("cached_tokens", 0) + cached
+    total_usage["cache_write_tokens"] = total_usage.get("cache_write_tokens", 0) + cache_write
+    # Track whether ANY cost was reported so the summary can tell a genuine
+    # $0 (free/local) from unknown cost (None) — a present cost, even 0.0, is
+    # "known".
+    if usable:
+        total_usage["cost_known"] = True
+    else:
+        # #692 gate: `cost_known` means "at least one call reported a cost", so
+        # a session mixing reported and unreported calls records a PARTIAL sum
+        # that reads as a measurement. That is a lower bound presented as a
+        # total — the exact failure invoice reconciliation must not have.
+        # `cost_complete` is the flag a total can be trusted on.
+        total_usage["cost_incomplete"] = True
+    if model is not None:
+        bucket = total_usage.setdefault("by_model", {}).setdefault(
+            model,
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+            },
+        )
+        bucket["prompt_tokens"] += _as_number(usage.get("prompt_tokens"))
+        bucket["completion_tokens"] += _as_number(usage.get("completion_tokens"))
+        bucket["total_tokens"] += _as_number(usage.get("total_tokens"))
+        bucket["cost_usd"] += cost
+        bucket["cost_estimated_usd"] = bucket.get("cost_estimated_usd", 0.0) + estimated
+        bucket["cost_observed_usd"] = bucket.get("cost_observed_usd", 0.0) + observed
+        if usable and not attributed:
+            bucket["cost_unattributed"] = True
+        _merge_cost_source(bucket, source)
+        bucket["cached_tokens"] += cached
+        bucket["cache_write_tokens"] = bucket.get("cache_write_tokens", 0) + cache_write
+        bucket["requests"] = bucket.get("requests", 0) + 1
+        if usable:
+            bucket["cost_known"] = True
+        else:
+            bucket["cost_incomplete"] = True
+
+
+def _build_usage_summary(by_stage: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """ADR-011: assemble the ``metadata["usage"]`` block from per-stage buckets.
+
+    Produces ``{"by_stage", "by_model", "total"}`` where ``total`` sums tokens +
+    cost + cached across stages and ``by_model`` merges per-model spend. Shared
+    by both council entry points so the HTTP and MCP paths report identically.
+    """
+    grand_total = {
+        "prompt_tokens": sum(_as_number(s.get("prompt_tokens")) for s in by_stage.values()),
+        "completion_tokens": sum(_as_number(s.get("completion_tokens")) for s in by_stage.values()),
+        "total_tokens": sum(_as_number(s.get("total_tokens")) for s in by_stage.values()),
+        "cost_usd": sum(_as_number(s.get("cost_usd")) for s in by_stage.values()),
+        "cached_tokens": sum(_as_number(s.get("cached_tokens")) for s in by_stage.values()),
+        "cache_write_tokens": sum(_as_number(s.get("cache_write_tokens")) for s in by_stage.values()),
+        "cost_known": any(s.get("cost_known", False) for s in by_stage.values()),
+        # #707: provenance has to reach the total, because the total is what
+        # every consumer reads. Before this, `cost_source` and
+        # `cost_estimated_usd` stopped at the per-model buckets, so the #694
+        # "(incl. ~$X estimated)" disclosure and the ADR-056 rule "only
+        # provider-reported cost leaves the process" both read keys that were
+        # never here, and held only in tests that hand-built a total.
+        "cost_estimated_usd": sum(
+            _as_number(s.get("cost_estimated_usd")) for s in by_stage.values()
+        ),
+        "cost_observed_usd": sum(
+            _as_number(s.get("cost_observed_usd")) for s in by_stage.values()
+        ),
+        "requests": sum(int(_as_number(s.get("requests"))) for s in by_stage.values()),
+    }
+    for stage_usage in by_stage.values():
+        _merge_cost_source(grand_total, stage_usage.get("cost_source"))
+        _note_cost_sources(grand_total, stage_usage.get("cost_sources"))
+    if any(s.get("cost_incomplete") for s in by_stage.values()):
+        grand_total["cost_incomplete"] = True
+    if any(s.get("cost_unattributed") for s in by_stage.values()):
+        grand_total["cost_unattributed"] = True
+    numeric_keys = (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cost_usd",
+        "cached_tokens",
+        "cache_write_tokens",
+    )
+    by_model: Dict[str, Dict[str, Any]] = {}
+    for stage_usage in by_stage.values():
+        for model_id, model_usage in stage_usage.get("by_model", {}).items():
+            agg = by_model.setdefault(
+                model_id,
+                {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "cost_known": False,
+                },
+            )
+            for key in numeric_keys:  # never iterate the bool cost_known
+                agg[key] += _as_number(model_usage.get(key))
+            agg["requests"] = agg.get("requests", 0) + int(_as_number(model_usage.get("requests")))
+            agg["cost_estimated_usd"] = agg.get("cost_estimated_usd", 0.0) + _as_number(
+                model_usage.get("cost_estimated_usd")
+            )
+            agg["cost_observed_usd"] = agg.get("cost_observed_usd", 0.0) + _as_number(
+                model_usage.get("cost_observed_usd")
+            )
+            if model_usage.get("cost_unattributed"):
+                agg["cost_unattributed"] = True
+            _merge_cost_source(agg, model_usage.get("cost_source"))
+            _note_cost_sources(agg, model_usage.get("cost_sources"))
+            if model_usage.get("cost_known"):
+                agg["cost_known"] = True
+            if model_usage.get("cost_incomplete"):
+                agg["cost_incomplete"] = True
+    return {"by_stage": by_stage, "by_model": by_model, "total": grand_total}
+
+
+def persist_council_performance(
+    session_id: str,
+    model_statuses: Any,
+    aggregate_rankings: Any,
+    stage2_results: Any,
+    usage_summary: Any,
+) -> int:
+    """ADR-011 / #692: write one performance record per model for a consult.
+
+    Before this, `performance_metrics.jsonl` had exactly one writer — the
+    verify path. Every `consult`, the path an operator is actually billed for,
+    left no local trace at all, so a recorded total could not be compared with
+    a provider invoice and nobody could tell "cheap" from "unrecorded".
+
+    Both consult orchestrators route through here rather than calling
+    `persist_session_performance_data` directly, so the two cannot drift in
+    what they record, and so the council's list-shaped `aggregate_rankings` is
+    normalised in one place instead of at each call site.
+
+    Soft-fail by contract: telemetry must never fail a deliberation that has
+    already completed and already cost money. Returns the number of records
+    written, 0 on any failure.
+    """
+    try:
+        # The council carries rankings as a list of {"model": ..., ...};
+        # `persist_session_performance_data` wants them keyed by model.
+        if isinstance(aggregate_rankings, dict):
+            rankings = aggregate_rankings
+        elif isinstance(aggregate_rankings, list):
+            rankings = {
+                r["model"]: r
+                for r in aggregate_rankings
+                if isinstance(r, dict) and isinstance(r.get("model"), str)
+            }
+        else:
+            rankings = {}
+
+        from llm_council.performance.integration import persist_session_performance_data
+
+        return persist_session_performance_data(
+            session_id=session_id,
+            model_statuses=model_statuses or {},
+            aggregate_rankings=rankings,
+            stage2_results=stage2_results,
+            usage_by_model=(usage_summary or {}).get("by_model"),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("performance persistence failed (ignored): %s", exc, exc_info=True)
+        return 0

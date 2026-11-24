@@ -1,0 +1,486 @@
+"""Gateway adapter for LLM Council (ADR-023).
+
+This module provides a unified interface for LLM requests that can use either:
+- Direct openrouter module (default, backward compatible)
+- Gateway layer (when USE_GATEWAY_LAYER is enabled)
+
+Usage:
+    from llm_council.gateway_adapter import query_model, query_models_parallel
+
+    # Uses the configured backend (direct or gateway)
+    response = await query_model("openai/gpt-4o", messages)
+"""
+
+import asyncio
+from typing import List, Dict, Any, Optional, Callable, Awaitable
+
+# ADR-032: Migrated to unified_config
+from llm_council.unified_config import get_config
+
+
+def _use_gateway_layer() -> bool:
+    """Check if gateway layer is enabled from unified config."""
+    config = get_config()
+    return getattr(config.gateways, "enabled", False) if hasattr(config, "gateways") else False
+
+
+USE_GATEWAY_LAYER = _use_gateway_layer()
+
+# Import direct openrouter functions (always available as fallback)
+from llm_council.openrouter import (
+    query_model as _direct_query_model,
+    query_model_with_status as _direct_query_model_with_status,
+    query_models_parallel as _direct_query_models_parallel,
+    query_models_with_progress as _direct_query_models_with_progress,
+    STATUS_OK,
+    STATUS_TIMEOUT,
+    STATUS_RATE_LIMITED,
+    STATUS_AUTH_ERROR,
+    STATUS_ERROR,
+)
+
+# Re-export status constants
+__all__ = [
+    "query_model",
+    "query_model_with_status",
+    "query_models_parallel",
+    "query_models_with_progress",
+    "STATUS_OK",
+    "STATUS_TIMEOUT",
+    "STATUS_RATE_LIMITED",
+    "STATUS_AUTH_ERROR",
+    "STATUS_ERROR",
+]
+
+
+# Lazy-initialized gateway router (only created when needed)
+_gateway_router = None
+
+
+def _get_gateway_router():
+    """Get or create the gateway router singleton."""
+    global _gateway_router
+    if _gateway_router is None:
+        from llm_council.gateway.router import GatewayRouter
+
+        _gateway_router = GatewayRouter()
+    return _gateway_router
+
+# #694 gate rounds 3-4: `reasoning_params` (ADR-026) is accepted by all FOUR
+# public entry points here — `query_model`, `query_model_with_status`,
+# `query_models_parallel` and `query_models_with_progress` — because the direct
+# implementations accept it and this module documents itself as the unified
+# interface. A caller passing it was getting a TypeError, which is the #365
+# silent-parameter-drop class one layer up.
+#
+# Round 3 added it to three of the four and this comment claimed all of them;
+# round 4 found the gap, on the primary multi-model path. The claim is now
+# enforced by `tests/test_issue694_cost_fallback.py`, which enumerates the entry
+# points from `__all__` rather than from a hand-written list — a comment cannot
+# be trusted to stay true, and this one was not.
+#
+# It is FORWARDED on the direct path (the default) and currently IGNORED on the
+# gateway branch, because `GatewayRequest` carries its own `reasoning_params`
+# shape and wiring that is gateway work, tracked in #702. Accepting-and-ignoring
+# is stated here rather than left to be discovered: the alternative was leaving
+# the TypeError in place, which is worse.
+
+def _error_detail(exc: BaseException) -> str:
+    """A never-empty diagnostic for an exception (#594).
+
+    #694 gate round 3: round 2 wrote `f"{type(e).__name__}: {e}".rstrip(": ")`,
+    and `rstrip` takes a CHARACTER SET, not a suffix — so a legitimate message
+    ending in a colon or a space was silently mangled. One helper, and the
+    formatting is not repeated in a divergent form on each path.
+    """
+    message = str(exc)
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
+
+def _usage_to_dict(usage) -> Dict[str, Any]:
+    """The council's usage dict from a gateway `UsageInfo`. The ONLY place.
+
+    #694 gate: there were THREE hand-built copies of this mapping, not two —
+    `_gateway_response_to_dict`, `query_model`, and the gateway branch of
+    `query_models_parallel`. The PR claiming to have fixed "both" sites left
+    the third one, which is the primary multi-model path: stages 1 and 2 both
+    go through `query_models_parallel`, so the most important route kept
+    dropping cost and cache counters.
+
+    Patching the third copy would have left a fourth waiting to be added. One
+    function is the fix; `tests/test_issue694_cost_fallback.py` pins that every
+    conversion site routes through it.
+    """
+    if usage is None:
+        return {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost": None,
+            "cost_source": None,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        # Computed upstream by CostResolver and previously discarded here, so
+        # the one path WITH a registry fallback was the one reporting no cost.
+        "cost": usage.cost_usd,
+        "cost_source": usage.cost_source,
+        "cached_tokens": usage.cached_tokens,
+        "cache_write_tokens": getattr(usage, "cache_write_tokens", 0),
+    }
+
+
+def _gateway_response_to_dict(response) -> Dict[str, Any]:
+    """Convert GatewayResponse to the dict format expected by council."""
+    result = {
+        "status": response.status,
+        "latency_ms": response.latency_ms or 0,
+    }
+
+    if response.status == STATUS_OK:
+        result["content"] = response.content
+        # #694: cost_usd/cost_source/cached/cache_write were computed by
+        # `CostResolver` upstream and then thrown away here, so the ONE path
+        # with a registry fallback was also the path that reported no cost.
+        # Turning `gateways.enabled` on would have silently zeroed cost
+        # coverage and cache telemetry together — invisible until someone
+        # reconciled a bill.
+        #
+        # Set unconditionally (gate round 3): `_usage_to_dict(None)` returns the
+        # zero-filled shape for exactly this case, and omitting the key on one
+        # path while returning a dict on another is a KeyError waiting for a
+        # consumer.
+        result["usage"] = _usage_to_dict(response.usage)
+
+    if response.error:
+        result["error"] = response.error
+
+    if response.retry_after:
+        result["retry_after"] = response.retry_after
+
+    return result
+
+
+async def query_model(
+    model: str, messages: List[Dict[str, str]], timeout: float = 120.0, disable_tools: bool = False,
+    reasoning_params: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Query a single model via OpenRouter API.
+
+    Uses gateway layer if USE_GATEWAY_LAYER is enabled, otherwise uses direct
+    openrouter module.
+
+    Args:
+        model: OpenRouter model identifier (e.g., "openai/gpt-4o")
+        messages: List of message dicts with 'role' and 'content'
+        timeout: Request timeout in seconds
+        disable_tools: If True, explicitly disable tool/function calling
+
+    Returns:
+        Response dict with 'content', optional 'reasoning_details', and 'usage',
+        or None if failed
+    """
+    if USE_GATEWAY_LAYER:
+        from llm_council.gateway.types import GatewayRequest, CanonicalMessage, ContentBlock
+
+        # Convert messages to canonical format
+        canonical_messages = [
+            CanonicalMessage(
+                role=msg["role"], content=[ContentBlock(type="text", text=msg.get("content", ""))]
+            )
+            for msg in messages
+        ]
+
+        request = GatewayRequest(
+            model=model,
+            messages=canonical_messages,
+            timeout=timeout,
+        )
+
+        router = _get_gateway_router()
+        response = await router.complete(request)
+
+        if response.status == STATUS_OK:
+            usage = response.usage
+            return {
+                "content": response.content,
+                "reasoning_details": None,  # Not available via gateway yet
+                # #694: the second conversion site, with the same omission as
+                # `_gateway_response_to_dict`. Both had to be fixed; fixing one
+                # would have left the regression on the other entry point.
+                "usage": _usage_to_dict(usage),
+            }
+        return None
+    else:
+        return await _direct_query_model(model, messages, timeout, disable_tools, reasoning_params)
+
+
+async def query_model_with_status(
+    model: str, messages: List[Dict[str, str]], timeout: float = 120.0, disable_tools: bool = False,
+    reasoning_params: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Query a single model with structured status (ADR-012).
+
+    Uses gateway layer if USE_GATEWAY_LAYER is enabled.
+
+    Args:
+        model: OpenRouter model identifier
+        messages: List of message dicts
+        timeout: Request timeout in seconds
+        disable_tools: If True, disable tool/function calling
+
+    Returns:
+        Response dict with 'status', 'content', 'latency_ms', 'usage', and optional 'error'
+    """
+    if USE_GATEWAY_LAYER:
+        from llm_council.gateway.types import GatewayRequest, CanonicalMessage, ContentBlock
+
+        canonical_messages = [
+            CanonicalMessage(
+                role=msg["role"], content=[ContentBlock(type="text", text=msg.get("content", ""))]
+            )
+            for msg in messages
+        ]
+
+        request = GatewayRequest(
+            model=model,
+            messages=canonical_messages,
+            timeout=timeout,
+        )
+
+        router = _get_gateway_router()
+        response = await router.complete(request)
+        return _gateway_response_to_dict(response)
+    else:
+        return await _direct_query_model_with_status(model, messages, timeout, disable_tools, reasoning_params)
+
+
+async def query_models_parallel(
+    models: List[str],
+    messages: List[Dict[str, str]],
+    disable_tools: bool = False,
+    timeout: float = 120.0,
+    reasoning_params: Optional[Any] = None,
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """
+    Query multiple models in parallel.
+
+    Uses gateway layer if USE_GATEWAY_LAYER is enabled.
+
+    Args:
+        models: List of OpenRouter model identifiers
+        messages: List of message dicts to send to each model
+        disable_tools: If True, disable tool/function calling for all queries
+        timeout: Per-model timeout in seconds
+
+    Returns:
+        Dict mapping model identifier to response dict (or None if failed)
+    """
+    if USE_GATEWAY_LAYER:
+        from llm_council.gateway.types import GatewayRequest, CanonicalMessage, ContentBlock
+
+        canonical_messages = [
+            CanonicalMessage(
+                role=msg["role"], content=[ContentBlock(type="text", text=msg.get("content", ""))]
+            )
+            for msg in messages
+        ]
+
+        requests = [
+            GatewayRequest(
+                model=model,
+                messages=canonical_messages,
+                timeout=timeout,
+            )
+            for model in models
+        ]
+
+        router = _get_gateway_router()
+        responses = await router.complete_many(requests)
+
+        result = {}
+        for model, response in zip(models, responses):
+            if response.status == STATUS_OK:
+                result[model] = {
+                    "content": response.content,
+                    "reasoning_details": None,
+                    "usage": _usage_to_dict(response.usage),
+                }
+            else:
+                result[model] = None
+
+        return result
+    else:
+        return await _direct_query_models_parallel(models, messages, disable_tools, timeout, reasoning_params)
+
+
+# Progress callback type
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
+
+
+async def query_model_stream_with_status(
+    model: str,
+    messages: List[Dict[str, str]],
+    on_delta: Callable[[str], Awaitable[None]],
+    timeout: float = 120.0,
+    disable_tools: bool = True,
+) -> Dict[str, Any]:
+    """Stream a single model's completion, invoking on_delta per chunk (ADR-046 P2).
+
+    ``disable_tools`` is accepted for signature parity with
+    query_model_with_status but is vestigial on the gateway path:
+    GatewayRequest has no tools field and gateway requests never attach
+    tools, so there is nothing to disable (same as every other gateway-path
+    call in this module).
+
+    Assembles the full text and returns the same result shape as
+    query_model_with_status. The streaming wire protocol carries no usage
+    data, so ``usage`` is empty — ADR-011 cost_known semantics then report
+    UNKNOWN cost rather than fabricating one. Raises on transport failure
+    (callers fall back to the non-streaming path); CancelledError always
+    propagates.
+    """
+    if not USE_GATEWAY_LAYER:
+        raise NotImplementedError("token streaming requires the gateway layer")
+    from llm_council.gateway.types import CanonicalMessage, ContentBlock, GatewayRequest
+
+    import time as _time
+
+    start = _time.monotonic()
+    request = GatewayRequest(
+        model=model,
+        messages=[
+            CanonicalMessage(
+                role=m["role"], content=[ContentBlock(type="text", text=m.get("content", ""))]
+            )
+            for m in messages
+        ],
+        timeout=timeout,
+    )
+    router = _get_gateway_router()
+    parts: List[str] = []
+    async for chunk in router.complete_stream(request):
+        parts.append(chunk)
+        try:
+            await on_delta(chunk)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass  # a broken delta consumer must not kill the synthesis
+    return {
+        "status": STATUS_OK,
+        "content": "".join(parts),
+        "latency_ms": int((_time.monotonic() - start) * 1000),
+        "usage": {},
+    }
+
+
+async def query_models_with_progress(
+    models: List[str],
+    messages: List[Dict[str, str]],
+    on_progress: Optional[ProgressCallback] = None,
+    timeout: float = 25.0,
+    disable_tools: bool = False,
+    shared_results: Optional[Dict[str, Dict[str, Any]]] = None,
+    on_model_complete: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    reasoning_params: Optional[Any] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Query multiple models with progress callbacks and structured status (ADR-012).
+
+    Uses gateway layer if USE_GATEWAY_LAYER is enabled.
+
+    Args:
+        models: List of OpenRouter model identifiers
+        messages: List of message dicts to send to each model
+        on_progress: Async callback(completed, total, message) for progress updates
+        timeout: Per-model timeout in seconds (default 25s per ADR-012)
+        disable_tools: If True, disable tool/function calling for all queries
+        shared_results: Optional dict to populate incrementally
+
+    Returns:
+        Dict mapping model identifier to structured result with status
+    """
+    if USE_GATEWAY_LAYER:
+        from llm_council.gateway.types import GatewayRequest, CanonicalMessage, ContentBlock
+
+        results: Dict[str, Dict[str, Any]] = shared_results if shared_results is not None else {}
+        total = len(models)
+        completed = 0
+
+        if on_progress:
+            await on_progress(0, total, f"Querying {total} models...")
+
+        canonical_messages = [
+            CanonicalMessage(
+                role=msg["role"], content=[ContentBlock(type="text", text=msg.get("content", ""))]
+            )
+            for msg in messages
+        ]
+
+        async def query_with_tracking(model: str):
+            nonlocal completed
+
+            try:
+                request = GatewayRequest(
+                    model=model,
+                    messages=canonical_messages,
+                    timeout=timeout,
+                )
+
+                router = _get_gateway_router()
+                response = await router.complete(request)
+                result = _gateway_response_to_dict(response)
+            except Exception as e:
+                result = {
+                    "status": STATUS_ERROR,
+                    "content": None,
+                    "latency_ms": 0,
+                    # #594 / #694 gate round 2: `str(e)` is "" for an
+                    # exception built without a message, which is the
+                    # undiagnosable empty detail #594 fixed on the direct
+                    # path. Same commit, same file, opposite behaviour.
+                    "error": _error_detail(e),
+                }
+
+            results[model] = result
+            completed += 1
+
+            # ADR-046 P1: per-model completion hook (soft-fail, streaming only)
+            if on_model_complete is not None:
+                try:
+                    await on_model_complete(model, result)
+                except Exception:
+                    pass
+
+            if on_progress:
+                status_emoji = "✓" if result["status"] == STATUS_OK else "✗"
+                model_short = model.split("/")[-1]
+                await on_progress(
+                    completed, total, f"{status_emoji} {model_short} ({completed}/{total})"
+                )
+
+            return model, result
+
+        tasks = [query_with_tracking(model) for model in models]
+        await asyncio.gather(*tasks)
+
+        return results
+    else:
+        return await _direct_query_models_with_progress(
+            models,
+            messages,
+            on_progress,
+            timeout,
+            disable_tools,
+            shared_results=shared_results,
+            on_model_complete=on_model_complete,
+            reasoning_params=reasoning_params,
+        )

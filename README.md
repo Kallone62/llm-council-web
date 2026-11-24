@@ -1,370 +1,1415 @@
-# LLM Council Web
+<p align="center">
+  <a href="https://amiable-dev.github.io/llm-council">
+    <img src="https://raw.githubusercontent.com/amiable-dev/llm-council/master/docs/img/logo.svg" alt="LLM Council Logo" width="200">
+  </a>
+</p>
 
-**Karpathy's LLM Council experience, modernized with Amiable's current council engine.**
+<h1 align="center">LLM Council Core</h1>
 
-A local-first web app for people who want to try and use the LLM Council concept without needing a proprietary council subscription, a CLI workflow, or application-development experience.
+<p align="center">
+  <a href="https://github.com/amiable-dev/llm-council/actions/workflows/ci.yml"><img src="https://github.com/amiable-dev/llm-council/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/amiable-dev/llm-council/actions/workflows/security.yml"><img src="https://github.com/amiable-dev/llm-council/actions/workflows/security.yml/badge.svg" alt="Security Scanning"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/amiable-dev/llm-council"><img src="https://api.scorecard.dev/projects/github.com/amiable-dev/llm-council/badge" alt="OpenSSF Scorecard"></a>
+  <a href="https://www.bestpractices.dev/projects/14204"><img src="https://www.bestpractices.dev/projects/14204/badge" alt="OpenSSF Best Practices"></a>
+  <a href="https://pypi.org/project/llm-council-core/"><img src="https://img.shields.io/pypi/v/llm-council-core.svg" alt="PyPI version"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://llm-council.dev"><img src="https://img.shields.io/badge/docs-llm--council.dev-blue" alt="Documentation"></a>
+  <a href="https://discord.gg/y467DGHF"><img src="https://img.shields.io/badge/Discord-Join%20Chat-7289da?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/users/amiable-dev/projects/1"><img src="https://img.shields.io/badge/roadmap-project%20board-blue?logo=github" alt="Roadmap"></a>
+</p>
 
-> **Unofficial community integration.** This project is not an official release from Andrej Karpathy or amiable-dev. It combines the original Karpathy web experience with the pinned `amiable-dev/llm-council` engine package (`llm-council-core==0.53.0`).
+<p align="center">
+  <em>A multi-LLM deliberation system where multiple LLMs collaboratively answer questions through peer review and synthesis. Available as a Python library, MCP server, or HTTP API.</em>
+</p>
 
-## Why this exists
+## What is This?
 
-There are two excellent open-source projects with different strengths:
+Instead of asking a single LLM for answers, this MCP server:
+1. **Stage 1**: Sends your question to multiple LLMs in parallel (GPT, Claude, Gemini, Grok, etc.)
+2. **Stage 2**: Each LLM reviews and ranks the other responses (anonymized to prevent bias)
+3. **Stage 3**: A Chairman LLM synthesizes all responses into a final, high-quality answer
 
-- **[karpathy/llm-council](https://github.com/karpathy/llm-council)** made the LLM Council idea easy to understand through a simple ChatGPT-like local web app.
-- **[amiable-dev/llm-council](https://github.com/amiable-dev/llm-council)** evolved the council engine with richer deliberation, ranking, verdict, evaluation, cost and reliability features, but is primarily packaged for developer-oriented workflows such as Python, CLI, MCP and HTTP APIs.
+## Quick Deploy
 
-This project bridges those two worlds.
+Deploy your own LLM Council instance:
 
-It is aimed at people who:
+| Platform | Deploy | Best For |
+|----------|--------|----------|
+| **Railway** | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/llm-council?referralCode=K9dsYj) | Production, webhooks |
+| **Render** | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/amiable-dev/llm-council) | Evaluation, free tier |
 
-- want to experiment with the **LLM Council** concept without learning a CLI or writing code;
-- like the simplicity of Karpathy's original interface but want a more modern decision engine;
-- do not want to depend on a paid proprietary "AI council" subscription;
-- want to bring their own OpenRouter key and choose the models that make up the council;
-- want to see independent answers, peer review, ranking, disagreement and a final synthesized decision in one interface.
+**Required Environment Variables:**
+- `OPENROUTER_API_KEY` - Your [OpenRouter](https://openrouter.ai) API key
+- `LLM_COUNCIL_API_TOKEN` - A secure token for API authentication (generate with `openssl rand -hex 16`)
 
-**Important:** the app itself is local and open-source, but selected cloud models may charge API usage through OpenRouter. It is not accurate to describe every run as free.
+> **Note**: Railway is recommended for [n8n integration](https://llm-council.dev/integrations/n8n/) (no cold-start). Render Free tier spins down after 15 minutes which may cause webhook timeouts.
 
-## What happens when you ask a question
+For detailed deployment instructions, see the [Deployment Guide](https://llm-council.dev/deployment/).
 
-1. **Stage 1 — Independent opinions**  
-   Multiple configured models answer the question independently.
-2. **Stage 2 — Peer review and ranking**  
-   Amiable's engine anonymizes responses, has council members review them, and aggregates rankings using its modern ranking/Borda pipeline.
-3. **Stage 3 — Chairman / verdict**  
-   A Chairman model synthesizes the result or produces a structured Jury Mode verdict.
 
-The app keeps Amiable's richer metadata instead of reducing it to the original schema, including aggregate rankings, Borda data, usage/cost metadata, verdicts, dissent and enabled evaluation results.
+## Credits & Attribution
 
-## Highlights
+This project is a derivative work based on the original [llm-council](https://github.com/karpathy/llm-council) by Andrej Karpathy.
 
-- Familiar **Karpathy-style web interface**
-- Direct use of Amiable's `run_full_council()` engine — no duplicate council algorithm
-- **Free / Quick / Balanced / High / Reasoning** model profiles
-- Custom council model selection and custom OpenRouter model IDs
-- **Auto or manual Chairman** selection
-- Consensus / debate behavior controls
-- Self-vote exclusion and style normalization
-- Optional rubric scoring, bias audit and safety gate
-- Synthesis / Binary Decision / Tie-breaker verdict modes
-- Optional dissent visibility
-- Local conversation storage
-- OpenRouter key management from Settings
-- **One-click Windows launcher** and optional desktop shortcut
-- Pinned `llm-council-core==0.53.0`; no automatic upstream updater
+Karpathy's original README stated:
+> "I'm not going to support it in any way, it's provided here as is for other people's inspiration and I don't intend to improve it. Code is ephemeral now and libraries are over, ask your LLM to change it in whatever way you like."
 
-## Application icon
+...the irony of producing a derivative work that packages the core concept for broader use via the Model Context Protocol!
 
-The original user-provided vector logo is the **single source of truth** at
-[`frontend/public/llm-council.svg`](frontend/public/llm-council.svg).
-It appears as the browser favicon and in the original Karpathy-style sidebar.
-The Windows packaging workflow rasterizes that SVG without redesigning it and
-uses its output for a multi-resolution EXE/desktop shortcut `.ico` and
-the system tray icon. Windows assets are automatically created during CI;
-there is no separate logo to maintain.
-
-## Windows desktop beta (recommended for non-developers)
-
-**Windows beta release:** [v1.1.0-beta.5](https://github.com/Kallone62/llm-council-web/releases/tag/v1.1.0-beta.5) — download the Windows ZIP under **Assets**. See [Release notes](RELEASE_NOTES_v1.1.0-beta.5.md) for supported features, known limitations and third-party licensing caveats.
-
-Windows x64 users can download `LLMCouncilWeb-Windows-x64.zip`, **extract the
-entire folder**, and double-click `LLMCouncilWeb.exe`. Keep the accompanying
-`_internal` folder and YAML next to the executable. The release bundles its
-own Python runtime, the Amiable engine and the production React UI. **No Git,
-Node.js, uv, Python or BAT scripts are needed to run the desktop release.**
-It opens the local browser at `http://localhost:8001/app/` **without
-showing a CMD or terminal window**. While running, the app shows an icon in
-the **Windows notification area (system tray)**, sometimes behind the ^ arrow.
-Right-click it to choose **Open LLM Council** or **Quit LLM Council**.
-Closing the browser tab does not stop the local server: use **Quit LLM Council**
-in the tray to shut it down. If the app fails to start, a Windows message box
-reports the error and logs are written under
-`%LOCALAPPDATA%\\LLMCouncilWeb\\logs`.
-
-The initial ZIP and one-command PowerShell installer are still separate ways
-to distribute the same GUI EXE; the PowerShell install window appears only
-during installation.
-
-For an optional one-command installation, paste the following into Windows PowerShell to download the
-version-pinned GitHub Release ZIP, verify its SHA256 digest, install it to your
-per-user AppData folder, create a desktop shortcut, and launch it:
-
-```powershell
-irm https://raw.githubusercontent.com/Kallone62/llm-council-web/v1.1.0-beta.5/scripts/install.ps1 | iex
-```
-
-**Security:** Piping a downloaded script into `iex` executes its contents.
-Before running it, inspect the exact [installer source](scripts/install.ps1)
-on GitHub. The install script downloads only from the tagged GitHub Release,
-checks the matching SHA256 asset, and does not request administrator privileges.
-Windows SmartScreen may warn about the currently **unsigned** community beta.
-
-The installer **preserves existing .env, llm_council.yaml and data/** from its
-own previous desktop installation. It deliberately does **not** overwrite or
-import files from a separate Git-cloned/.bat-based developer checkout; those
-remain separate unless manually migrated. The local backend binds to
-`127.0.0.1` only; it is not a public hosted service.
-
-The EXE is a packaging layer, not a rewrite of Karpathy's frontend or Amiable's
-engine. You still need your own OpenRouter API key (set it in **Settings**), and
-model requests may incur OpenRouter charges. Start with the **Free** profile
-if you want to try zero-priced OpenRouter endpoints within rate limits. The automated Windows smoke test does not make paid
-model calls. This is a **beta**, not a claim that all provider/model combinations
-have been exhaustively tested. See [NOTICE.md](NOTICE.md) for third-party
-attribution and licensing limitations.
-
-## Developer checkout (existing method)
-
-## One-click Windows start
-
-### First run
-
-Install these once:
-
-- [Node.js LTS](https://nodejs.org/)
-- [`uv`](https://docs.astral.sh/uv/)
-
-Then double-click:
-
-```text
-START_LLM_COUNCIL.bat
-```
-
-The launcher will automatically:
-
-1. create a local `.env` if needed;
-2. run `uv sync` if the Python environment is missing;
-3. run `npm install` if frontend dependencies are missing;
-4. start the backend on `http://localhost:8001`;
-5. start the frontend on `http://localhost:5173`;
-6. open the app in your browser.
-
-On first use, open **Settings** and save your OpenRouter API key. The first-install default is **Free**; no payment is needed for available free model requests within OpenRouter's rate limits.
-
-To stop the app:
-
-```text
-STOP_LLM_COUNCIL.bat
-```
-
-To create a desktop shortcut once:
-
-```text
-CREATE_DESKTOP_SHORTCUT.bat
-```
-
-## Manual start
+## Installation
 
 ```bash
-uv sync
-cd frontend
-npm install
-cd ..
+# Recommended (isolated tool install; puts `llm-council` on PATH):
+uv tool install "llm-council-core[mcp,secure]"
+
+# Or with pip:
+pip install "llm-council-core[mcp,secure]"
 ```
 
-Backend:
+For core library only (no MCP server):
+```bash
+pip install llm-council-core
+```
+
+> **Why `[mcp,secure]` and not just `[mcp]`?** The `secure` extra provides
+> keychain support. Without it, `llm-council setup-key` is unavailable AND a
+> key already stored in your keychain is **silently ignored** — the server
+> starts but `council_health_check` reports `api_key_configured: false`.
+> Include both extras unless you only ever use environment variables.
+
+## Setup
+
+### 1. Choose Your Gateway
+
+The council supports three gateway options for accessing LLMs:
+
+| Gateway | Best For | API Keys Needed |
+|---------|----------|-----------------|
+| **OpenRouter** (default) | Easiest setup, 100+ models via single key | `OPENROUTER_API_KEY` |
+| **Requesty** | BYOK mode, analytics, cost tracking | `REQUESTY_API_KEY` + provider keys |
+| **Direct** | Maximum control, direct provider APIs | Provider keys (Anthropic, OpenAI, Google) |
+
+**Quick Start (OpenRouter):**
+```bash
+# Sign up at openrouter.ai and get your API key
+export OPENROUTER_API_KEY="sk-or-v1-..."
+```
+
+**Direct Provider Access:**
+```bash
+# Use your existing provider API keys directly
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+export GOOGLE_API_KEY="..."
+export LLM_COUNCIL_DEFAULT_GATEWAY=direct
+```
+
+**Requesty with BYOK:**
+```bash
+export REQUESTY_API_KEY="..."
+export ANTHROPIC_API_KEY="sk-ant-..."  # Your own key, routed through Requesty
+export LLM_COUNCIL_DEFAULT_GATEWAY=requesty
+```
+
+### 2. Store Your API Keys Securely
+
+Choose one of these options (in order of recommendation):
+
+#### Option A: System Keychain (Most Secure)
+
+Store keys encrypted in your OS keychain:
 
 ```bash
-uv run python -m backend.main
+# Install with keychain support
+pip install "llm-council-core[mcp,secure]"
+
+# Store key securely (prompts for key, no echo)
+llm-council setup-key
+
+# For CI/CD automation, pipe from stdin:
+echo "$OPENROUTER_API_KEY" | llm-council setup-key --stdin
 ```
 
-Frontend in a second terminal:
+#### Option B: Environment Variables
+
+Set in your shell profile (`~/.zshrc`, `~/.bashrc`):
 
 ```bash
-cd frontend
-npm run dev
+# OpenRouter (default gateway)
+export OPENROUTER_API_KEY="sk-or-v1-..."
+
+# Or use direct provider APIs
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+export GOOGLE_API_KEY="..."
 ```
 
-Open `http://localhost:5173`.
+#### Option C: Environment File
 
-## Free profile (zero-priced OpenRouter endpoints)
+Create a `.env` file (ensure it's in `.gitignore`):
 
-New installations start with the **Free** preset, without installing Ollama.
-The app still **requires the user to create and paste their own OpenRouter API
-key in Settings**. OpenRouter free-model endpoints have no prompt/completion
-token charge at the time of this release, but use limited quotas and can be
-rate-limited, unavailable, or withdrawn. Do not promise unlimited free usage.
-Provider privacy policies differ; avoid sending sensitive data to free models.
+```bash
+# For OpenRouter
+echo "OPENROUTER_API_KEY=sk-or-v1-..." > .env
 
-Free is a **fifth, independent application-level profile**, not an alias
-of Quick. Amiable's pinned engine validates only four native tiers, so the
-Free model pool and Chairman are kept separate from those native pools.
-Selecting Free **does not change the current native tier** (which the engine
-still uses for timeouts); selecting Quick restores Amiable's original Quick
-model pool. No upstream engine code is patched. The exact preset is:
-- Council: `google/gemma-4-31b-it:free`,
-  `qwen/qwen3.8-27b:free`,
-  `nvidia/nemotron-3-super-120b-a12b:free`
-- Chairman and conversation-memory summarizer:
-  `google/gemma-4-31b-it:free`
-- Conversation titles: deterministic local text (no extra LLM call)
-- Native style normalization and optional evaluation disabled; model and
-  Chairman are fixed. OpenRouter gateway failover is disabled to avoid
-  rerouting free requests to a possibly paid provider.
-
-Requests stop if effective engine configuration overrides would break the
-Free preset, rather than silently falling back to a paid model. Existing
-saved setups are not migrated automatically; selecting Free in Settings
-changes the chosen profile. Changing back to paid profiles restores the
-corresponding native Amiable model pool.
-
-**Stage 1 zero-response reporting:** when all models fail before peer
-review, the UI shows an explicit failure rather than a green Final Council
-Answer. **The request-status interception introduced in beta.5 has been
-rolled back on the main development branch** to restore Amiable's untouched
-model-query path; it is not yet part of a new release. Stage 1 failure
-classification is therefore intentionally generic until direct OpenRouter
-testing establishes why 404 occurred. Inspect the local application log for
-provider errors; this does not override quota or model availability limits.
-
-**Free Chairman provider-error recovery (beta.4):** if the primary Free Chairman
-returns a structured OpenRouter `rate_limited` error or a provider 404/5xx,
-the app retries **only Stage 3** using the other fixed `:free` models (at most
-two extra attempts).
-Stage 1 and peer-review are not repeated and Quick/other paid profiles remain
-unchanged. An exhausted account-wide quota or a temporarily unavailable free
-provider can still prevent a final synthesis; the failure is displayed clearly,
-with the completed earlier stages kept in conversation history. No automatic
-paid-model fallback or guarantee of uninterrupted free service.
-
-A full Council run makes multiple requests, so free daily quotas can be
-used quickly. For currently available models and limits see
-https://openrouter.ai/collections/free-models and
-https://openrouter.ai/pricing .
-
-## Follow-up conversations
-
-After the first Council result, the message composer stays available in the
-same chat. Follow-up questions start a new full Amiable Council round.
-
-To preserve the meaning of previous decisions **without chopping answers off
-mid-sentence**, conversation context is prepared as follows:
-
-- Short histories: pass full previous user questions and Chairman final answers
-  unchanged (no summarization call).
-- Long histories (more than 6,000 characters): use the existing Amiable
-  OpenRouter `query_model()` client with `google/gemini-2.5-flash` to generate
-  a compact decision-oriented memory (maximum 4,000 characters).
-- Store the AI summary in the same conversation JSON under `context_memory`
-  with the number of completed rounds it covers, then update it incrementally
-  only when the context grows too large again.
-- Do not resubmit raw Stage 1/2 peer reviews, and do not rewrite or truncate
-  the full saved conversation history.
-- If the memory model fails or responds with unusable/oversized text, return
-  an error **before** starting another expensive Council round rather than
-  silently deleting relevant context.
-
-An AI summary is a *lossy, fallible interpretation*, not guaranteed perfect
-recall. For important decisions, refer to the full earlier answers retained in
-the local JSON. Summarization incurs a separate OpenRouter model call when needed. In Free
-mode it uses the free Chairman endpoint; in other profiles it may have a
-charge, in addition to any new three-stage Council run. OpenRouter
-cost metadata from the full Council run does not automatically include the
-separate memory-summarization charge.
-
-## Settings
-
-The Settings screen writes the active Amiable config at:
-
-```text
-llm_council.yaml
+# Or for direct APIs
+cat > .env << 'EOF'
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+GOOGLE_API_KEY=...
+LLM_COUNCIL_DEFAULT_GATEWAY=direct
+EOF
 ```
 
-Normal settings changes hot-reload the engine, so a server restart is usually unnecessary.
+> **Security Note**: Never put API keys in command-line arguments or JSON config files that might be committed to version control.
 
-Secrets stay separate:
+### 3. Customize Models (Optional)
 
-```text
-.env               -> API keys and local secrets (gitignored)
-llm_council.yaml   -> models, chairman, council/evaluation/cache settings
+You can customize which models participate in the council using three methods (in priority order):
+
+#### Option 1: Environment Variables (Recommended)
+
+```bash
+# Comma-separated list of council models
+export LLM_COUNCIL_MODELS="openai/gpt-4,anthropic/claude-3-opus,google/gemini-pro"
+
+# Chairman model (synthesizes final response)
+export LLM_COUNCIL_CHAIRMAN="anthropic/claude-3-opus"
+
+# Skip chairman synthesis, return the top-ranked Stage 1 response directly
+# (cheaper/faster, but NEVER enable this for council-verify/council-gate --
+# no verdict is computed; see docs/guides/verify.md)
+export LLM_COUNCIL_CHAIRMAN_DISABLED=false
 ```
 
-The UI intentionally exposes the settings that are most useful to non-developer users. Advanced Amiable options can still be edited directly in `llm_council.yaml`.
+#### Option 2: YAML Configuration (Recommended)
 
-### High profile models (when selected)
+Create `llm_council.yaml` in your project root or `~/.config/llm-council/llm_council.yaml`:
 
-- `openai/gpt-5.6-sol`
-- `anthropic/claude-opus-5`
-- `deepseek/deepseek-v4-pro-0813`
-- `z-ai/glm-5.3`
+```yaml
+council:
+  # Tier configuration (ADR-022)
+  tiers:
+    default: high
+    pools:
+      quick:
+        models:
+          - openai/gpt-4o-mini
+          - anthropic/claude-3-5-haiku-20241022
+        timeout_seconds: 30
+      balanced:
+        models:
+          - openai/gpt-4o
+          - anthropic/claude-3-5-sonnet-20241022
+        timeout_seconds: 90
+      high:
+        models:
+          - openai/gpt-4o
+          - anthropic/claude-opus-4-7
+          - google/gemini-3-pro
+        timeout_seconds: 180
 
-With Chairman set to **Auto**, the High profile resolves to Amiable's profile Chairman for the pinned engine release.
+  # Triage configuration (ADR-020)
+  triage:
+    enabled: false
+    wildcard:
+      enabled: true
+    prompt_optimization:
+      enabled: true
 
-## Per-question decision modes
+  # Gateway configuration (ADR-023, ADR-025a)
+  gateways:
+    default: openrouter
+    fallback:
+      enabled: true
+      chain: [openrouter, ollama]  # Can use Ollama as fallback
 
-The controls beneath the message box are deliberately separate from global Settings:
+    # Provider-specific configuration
+    providers:
+      ollama:
+        enabled: true
+        base_url: http://localhost:11434
+        timeout_seconds: 120.0
+        hardware_profile: recommended  # minimum|recommended|professional|enterprise
 
-- **Synthesis** — free-form council synthesis
-- **Binary decision** — structured approved/rejected-style decision with confidence and rationale
-- **Tie-breaker** — Chairman resolves a deadlocked choice
-- **Include dissent** — preserves minority reasoning when available
+      openrouter:
+        enabled: true
+        base_url: https://openrouter.ai/api/v1/chat/completions
 
-These are passed into Amiable's decision engine rather than reimplemented in the web layer.
+      requesty:
+        enabled: true
+        base_url: https://router.requesty.ai/v1/chat/completions
+        api_key: ${REQUESTY_API_KEY}
 
-## Architecture
+    # Per-gateway model-id translation (e.g. Requesty rejects OpenRouter's
+    # ":free" suffix and uses provider-prefixed names for some models)
+    model_name_map:
+      requesty:
+        "some/model:free": "some/model"
 
-```text
-Karpathy-style React UI
-        │
-        │ REST / SSE compatibility envelope
-        ▼
-backend/main.py
-        │
-        │ direct run_full_council(...)
-        ▼
-Amiable llm-council-core
-        │
-        ▼
-OpenRouter / selected models
+  # Webhook notifications (ADR-025a)
+  webhooks:
+    enabled: false  # Opt-in
+    timeout_seconds: 5.0
+    max_retries: 3
+    https_only: true
+    default_events:
+      - council.complete
+      - council.error
+
+  observability:
+    log_escalations: true
 ```
 
-There is no separate council adapter service and no second implementation of the decision algorithm.
+**Priority**: YAML config > Environment variables > Defaults
 
-## Why multi-model deliberation can be useful
+#### Option 3: JSON Configuration (Legacy)
 
-This project does **not** claim that a council is always correct or that multiple models eliminate hallucinations. Multiple models can share the same blind spot. The useful idea is that independent generation, peer review, ranking and explicit dissent can expose disagreement and reduce dependence on a single model response.
+Create `~/.config/llm-council/config.json`:
 
-Related research directions include:
-
-- **Du et al. (2023), _Improving Factuality and Reasoning in Language Models through Multiagent Debate_** — explores multiple model instances proposing and debating answers.  
-  https://arxiv.org/abs/2305.14325
-- **Wang et al. (2022), _Self-Consistency Improves Chain of Thought Reasoning in Language Models_** — shows benefits from aggregating diverse reasoning paths rather than relying on a single generation.  
-  https://arxiv.org/abs/2203.11171
-- **Wang et al. (2023), _Large Language Models are not Fair Evaluators_** — documents position/evaluation bias in LLM-as-a-judge setups, motivating care around ranking and evaluation design.  
-  https://arxiv.org/abs/2305.17926
-
-These papers are background context, not evidence that this specific integration outperforms every single-model workflow.
-
-## Upstream and attribution
-
-This integration builds on:
-
-- **Andrej Karpathy — `karpathy/llm-council`**  
-  https://github.com/karpathy/llm-council
-- **amiable-dev — `amiable-dev/llm-council`**  
-  https://github.com/amiable-dev/llm-council
-
-The Amiable engine is installed as the exact PyPI dependency `llm-council-core==0.53.0`, which is published under the MIT License. See [`NOTICE.md`](NOTICE.md) for attribution details.
-
-## Version and update policy
-
-This repository intentionally pins an **exact engine release** rather than automatically tracking upstream changes.
-
-```text
-App:    v1.1.0-beta.5
-Engine: llm-council-core==0.53.0
+```json
+{
+  "council_models": [
+    "openai/gpt-4-turbo",
+    "anthropic/claude-3-opus",
+    "google/gemini-pro",
+    "meta-llama/llama-3-70b-instruct"
+  ],
+  "chairman_model": "anthropic/claude-3-opus",
+  "synthesis_mode": "consensus",
+  "exclude_self_votes": true,
+  "style_normalization": false,
+  "max_reviewers": null
+}
 ```
 
-If the app proves useful and an upstream update becomes worthwhile, the preferred process is to integrate it manually, retest the web compatibility layer, and publish a new release.
+#### Option 4: Use Defaults
 
-## Security
+If you don't configure anything, these defaults are used:
+- Council: GPT-5.1, Gemini 3 Pro, Claude Sonnet 4.5, Grok 4
+- Chairman: Gemini 3 Pro
+- Mode: consensus
+- Self-vote exclusion: enabled
 
-- The backend listens only on `127.0.0.1:8001`; it is not a remotely hosted or authenticated API. Do not expose it through a port-forward, public reverse proxy, or `0.0.0.0` binding without adding access controls.
-- `.env` is gitignored.
-- The existing OpenRouter API key is never returned to the browser.
-- The Settings UI only reports whether a key is configured.
-- Do not commit API keys or paste them into issues/screenshots.
+**Finding Models**:
+- OpenRouter: [openrouter.ai/models](https://openrouter.ai/models)
+- Anthropic: [docs.anthropic.com/models](https://docs.anthropic.com/en/docs/about-claude/models)
+- OpenAI: [platform.openai.com/docs/models](https://platform.openai.com/docs/models)
+- Google: [ai.google.dev/gemini-api/docs/models](https://ai.google.dev/gemini-api/docs/models/gemini)
 
-## Project status
+## Usage
 
-This is intentionally a small community integration rather than a new framework. The priority is a simple, stable way to use the modern council engine through a familiar local web UI.
+### With Claude Code
+
+```bash
+# First, store your API key securely (one-time setup)
+llm-council setup-key
+
+# Then add the MCP server (key is read from keychain or environment)
+claude mcp add --transport stdio llm-council --scope user -- llm-council
+```
+
+Then in Claude Code:
+```
+Consult the LLM council about best practices for error handling
+```
+
+### With Claude Desktop
+
+First ensure your API key is available (via keychain, environment variable, or `.env` file).
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "llm-council": {
+      "command": "llm-council"
+    }
+  }
+}
+```
+
+> **Note**: No `env` block needed—the key is resolved from your system keychain or environment automatically.
+
+> **Client timeouts (`high`/`reasoning` tiers):** deliberation can exceed MCP
+> clients' default transport timeout (~60s). Set `MCP_TIMEOUT` (milliseconds)
+> in your client config to at least the tier budget (`high` ≈ 180000,
+> `reasoning` ≈ 600000) or the client cuts the connection mid-deliberation.
+
+### With Other MCP Clients
+
+Any MCP client can use the server by running:
+```bash
+llm-council
+```
+
+### Quality Benchmark (`llm-council bench`)
+
+A golden dataset (`bench/dataset/v1/`, 20 items across coding/reasoning/factual/judgment) guards council quality against drift (ADR-048). **Every run costs real API spend** — it runs nightly/on-demand, never per-PR:
+
+```bash
+llm-council bench run [--items id1,id2] [--max-usd 2.00]   # exit 0 ok / 1 drift / 2 aborted-partial
+llm-council bench baseline --set                            # snapshot the last run as baseline
+llm-council bench report [--format md|json]                 # render the last run + baseline deltas
+```
+
+Caps: `LLM_COUNCIL_BENCH_MAX_USD` per run (default $2.00, enforced against actuals mid-run with graceful partial abort) and `LLM_COUNCIL_BENCH_MONTHLY_USD` month-to-date guard (default $30, from run artefacts under `.council/bench/runs/`). Dataset governance: [`bench/dataset/GOVERNANCE.md`](bench/dataset/GOVERNANCE.md).
+
+### Streaming Deliberation (SSE)
+
+`GET /v1/council/stream?prompt=...` streams the deliberation live (ADR-046). Beyond the coarse stage events, the stream now emits **rich per-model events**, each wrapped in a versioned envelope (`v: 1`, `session_id`, `ts`, monotonic `seq`):
+
+| Event | Payload | When |
+|---|---|---|
+| `stage1.response` | `model`, `response`, `latency_ms`, `usage` | each model's answer, as it lands |
+| `stage2.review` | `reviewer`, `ranking`, `parse_ok` | each peer review, as it lands |
+| `consensus.early_termination` | `leader`, `votes_saved`, … | ADR-044 early consensus (flag-on) |
+| `stage3.start` | `chairman` | synthesis begins |
+| `synthesis.delta` | `text` | chairman tokens, live (opt-in: `&stream_tokens=true`) |
+| `council.complete` | full result | terminal |
+| `council.error` | `error` | terminal |
+
+Schema changes are additive-only within `v: 1`. Non-streaming endpoints are byte-identical — the rich events are wired only when a stream consumer is attached. Chairman token streaming (`stream_tokens=true`) assembles the identical final result object as the non-streamed path; if the stream transport fails, stage 3 silently falls back to the regular call. Streamed synthesis reports usage as *unknown* (the streaming wire protocol carries no usage data) — ADR-011 semantics, never a fabricated cost.
+
+### Server Discovery (MCP Server Card)
+
+The HTTP server (`llm-council serve`) publishes an [MCP Server Card](https://github.com/modelcontextprotocol/experimental-ext-server-card) — public discovery metadata generated from the live tool registry — at:
+
+- `/server-card` (SEP-2127 experimental-extension path)
+- `/.well-known/mcp/server-card.json` (SEP-1649 well-known path)
+
+A static copy for registry submission lives at [`server-card.json`](server-card.json) and is regenerated with:
+
+```bash
+llm-council server-card --output server-card.json
+```
+
+The card follows the SEP-2127 RC schema (v1); it will be re-validated against the final schema after the MCP 2026-07-28 spec release.
+
+## Available Tools
+
+### `consult_council`
+
+Ask the LLM council a question and get synthesized guidance. Every response
+includes a one-line **Cost & Tokens** summary (total tokens, plus USD cost when
+the provider reports it); pass `include_details=true` for the full
+per-model/per-stage breakdown.
+
+**Arguments:**
+- `query` (string, required): The question to ask the council
+- `confidence` (string, optional): Response quality level (default: "high")
+  - `"quick"`: fast/mini-class models, ~30s — simple questions
+  - `"balanced"`: mid-tier models, ~90s — most questions
+  - `"high"`: the full frontier council, ~180s — important decisions
+  - `"reasoning"`: deep-thinking models, ~600s — complex analysis
+
+  The concrete model pools are configured in `llm_council.yaml` (or
+  `LLM_COUNCIL_MODELS_*`) — run `council_health_check` to see exactly what
+  YOUR council runs; any list printed here would drift.
+- `include_details` (boolean, optional): Include individual model responses, rankings, and the full per-model/per-stage **Cost & Tokens** breakdown (default: false)
+- `verdict_type` (string, optional): Type of verdict to render (default: "synthesis")
+  - `"synthesis"`: Free-form natural language synthesis
+  - `"binary"`: Go/no-go decision (approved/rejected) with confidence score
+  - `"tie_breaker"`: Chairman resolves deadlocked decisions
+- `include_dissent` (boolean, optional): Extract minority opinions from Stage 2 (default: false)
+- `evidence` (list, optional): Caller-supplied grounding context — retrieved
+  snippets, tool output, repo files — rendered into the question for every
+  council member under a per-tier budget (ADR-042)
+- `on_partial` (string, optional): What to do when the council **doesn't
+  complete** (default: `"synthesise"`)
+  - `"synthesise"`: answer anyway, with the shortfall declared in the heading
+    and above the content
+  - `"error"`: return a `council_incomplete` blob **instead of** an answer
+  - `"return_raw"`: return the surviving members' responses individually, with
+    no chairman synthesis over the top
+
+**Reading a degraded answer.** A run can complete with fewer models than it
+asked for. The heading says which kind of answer you got — `### Chairman's
+Synthesis` is reserved for a full deliberation, and a chairman-failed fallback
+is labelled as one model's raw response. Every response also ends with a
+machine-readable `### Council Status` block so automation can branch on
+`status` / `peer_review` without parsing prose. This matters because the models
+that time out are the slowest, hence generally the strongest — a short council
+is skewed, not merely smaller. See the
+[MCP guide](https://llm-council.dev/guides/mcp/#reading-a-degraded-answer).
+
+**Example:**
+```
+Use consult_council to ask: "What are the trade-offs between microservices and monolithic architecture?"
+```
+
+**Example with confidence level:**
+```
+Use consult_council with confidence="quick" to ask: "What's the syntax for a Python list comprehension?"
+```
+
+**Example with Jury Mode (binary verdict):**
+```
+Use consult_council with verdict_type="binary" and include_dissent=true to ask: "Should we approve this PR that adds caching?"
+```
+
+### `council_health_check`
+
+Verify the council is working before expensive operations. Returns API connectivity status, the models a real run would use, and each tier's server budget.
+
+**Arguments:**
+- `deep` (boolean, optional): Probe the configured **chairman** model as well as
+  general API reachability (default: **true**). Costs one small extra call
+  (~2-3s). Pass `deep=false` for a cheap connectivity-only ping. Skipped
+  automatically if general connectivity has already failed.
+- `tier` (string, optional): Report readiness for the tier a real run would use
+  (default: `"high"`)
+
+**Returns:**
+- `api_key_configured`: Whether an API key was found
+- `key_source`: Where the key came from ("environment", "keychain", or "config_file")
+- `default_tier` / `council_size` / `models`: The tier reported on, and the models a real `consult_council` run at that tier would actually use — resolved from the tier pool, not the flat config list
+- `chairman_model` / `chairman_connectivity`: The synthesis model, and its probe result when `deep` ran
+- `estimated_duration`: Each tier's configured **server budget** (an upper bound, not a typical latency)
+- `config_warnings`: Present only when two config surfaces disagree — e.g. `council.models` naming different models than the resolved tier pool
+- `ready`: Whether the council is ready to accept queries
+- `ready_scope`: What `ready` is a statement about — `chairman_probed` (default) or `connectivity_only`. Read this before trusting `ready`: a connectivity-only check answers *"is the API up"*, not *"will the council complete"*, and those diverge during a chairman outage
+
+**Example:**
+```
+Run council_health_check to verify the LLM council is working
+```
+
+## How It Works
+
+The council uses a multi-stage process inspired by ensemble methods and peer review:
+
+```
+User Query
+    ↓
+┌─────────────────────────────────────────────┐
+│ STAGE 1: Independent Responses              │
+│ • All council models queried in parallel    │
+│ • No knowledge of other responses           │
+│ • Graceful degradation if some fail         │
+└─────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────┐
+│ STAGE 1.5: Style Normalization (optional)   │
+│ • Rewrites responses in neutral style       │
+│ • Removes AI preambles and fingerprints     │
+│ • Strengthens anonymization                 │
+└─────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────┐
+│ STAGE 2: Anonymous Peer Review              │
+│ • Responses labeled A, B, C (randomized)    │
+│ • XML sandboxing prevents prompt injection  │
+│ • JSON-structured rankings with scores      │
+│ • Self-votes excluded from aggregation      │
+└─────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────┐
+│ STAGE 3: Chairman Synthesis                 │
+│ • Receives all responses + rankings         │
+│ • Consensus mode: single best answer        │
+│ • Debate mode: highlights disagreements     │
+└─────────────────────────────────────────────┘
+    ↓
+Final Response + Metadata
+```
+
+This approach helps surface diverse perspectives, identify consensus, and produce more balanced, well-reasoned answers.
+
+## Advanced Features
+
+### Compute-Optimal Deliberation (ADR-044)
+
+Three opt-in features (all **off by default**; flag-off behaviour is unchanged)
+let the council spend deliberation compute adaptively. Every routing influence
+is audited via LayerEvents — never a silent change.
+
+```bash
+# Blend each model's live performance history (quality per ADR-026, cost per
+# ADR-011) into tier selection. Cold-start models stay on static estimates.
+export LLM_COUNCIL_PERFORMANCE_SELECTION=true
+
+# Cancel remaining Stage-2 reviewers once the leading response's Borda margin
+# is mathematically unassailable. When off (default), runs in SHADOW MODE:
+# the would-have-saved votes/cost are logged so you can measure the win first.
+export LLM_COUNCIL_EARLY_CONSENSUS=true
+
+# Graduated deliberation depth: single model → mini-council → full council,
+# escalating only on weak consensus signals; escalations can be vetoed by the
+# opt-in budget enforcer (auditable, never silent).
+export LLM_COUNCIL_GRADUATED_DEPTH=true
+```
+
+### Self-Vote Exclusion
+
+By default, each model's vote for its own response is excluded from the aggregate rankings. This prevents self-preference bias.
+
+```bash
+export LLM_COUNCIL_EXCLUDE_SELF_VOTES=true  # default
+```
+
+### Synthesis Modes
+
+**Consensus Mode** (default): Chairman synthesizes a single best answer.
+
+**Debate Mode**: Chairman highlights areas of agreement, key disagreements, and trade-offs between perspectives.
+
+```bash
+export LLM_COUNCIL_MODE=debate
+```
+
+### Style Normalization (Stage 1.5)
+
+Optional preprocessing that rewrites all responses in a neutral style before peer review. This strengthens anonymization by removing stylistic "fingerprints" that might allow models to recognize each other.
+
+```bash
+export LLM_COUNCIL_STYLE_NORMALIZATION=true
+export LLM_COUNCIL_NORMALIZER_MODEL=google/gemini-2.0-flash-001  # fast/cheap
+```
+
+### Stratified Sampling (Large Councils)
+
+For councils with more than 5 models, you can limit the number of reviewers per response to reduce API costs (O(N²) → O(N×k)):
+
+```bash
+export LLM_COUNCIL_MAX_REVIEWERS=3
+```
+
+### Reliability Features
+
+The council includes built-in reliability features for long-running operations:
+
+**Tiered Timeouts**: Graceful degradation under time pressure:
+- Per-model soft deadline: 15s (start planning fallback)
+- Per-model hard deadline: 25s (abandon slow model)
+- Global synthesis trigger: 40s (must start synthesis)
+- Response deadline: 50s (must return something)
+
+**Partial Results**: If some models timeout, the council returns results from the models that responded, with a clear warning indicating which models were excluded.
+
+**Confidence Levels**: Use the `confidence` parameter to trade off speed vs. thoroughness:
+- `quick`: ~20-30 seconds (fastest models)
+- `balanced`: ~45-60 seconds (most models)
+- `high`: ~60-90 seconds (full council, default)
+
+**Progress Feedback**: During deliberation, progress updates show which models have responded and which are still pending:
+```
+✓ claude-opus-4.7 (1/4) | waiting: gpt-5.1, gemini-3-pro, grok-4
+✓ gemini-3-pro (2/4) | waiting: gpt-5.1, grok-4
+```
+
+### Jury Mode (ADR-025b)
+
+Transform the council from a "summary generator" to a "decision engine" with structured verdicts.
+
+**Verdict Types:**
+
+| Mode | Output | Use Case |
+|------|--------|----------|
+| `synthesis` (default) | Free-form synthesis | General questions, exploration |
+| `binary` | approved/rejected + confidence | CI/CD gates, PR reviews, policy checks |
+| `tie_breaker` | Chairman decides on deadlock | Contentious decisions |
+
+**Binary Verdict Mode:**
+
+Returns structured go/no-go decisions with confidence scores:
+
+```python
+# MCP Tool
+result = await consult_council(
+    query="Should we approve this architectural change?",
+    verdict_type="binary"
+)
+
+# Returns:
+{
+  "verdict": "approved",      # or "rejected"
+  "confidence": 0.75,         # 0.0-1.0 based on council agreement
+  "rationale": "Council agreed the change improves modularity..."
+}
+```
+
+**Tie-Breaker Mode:**
+
+When the council is deadlocked (top scores within 0.1 of each other), the chairman casts the deciding vote:
+
+```python
+result = await consult_council(
+    query="Option A vs Option B for caching strategy?",
+    verdict_type="binary"
+)
+
+# If deadlocked, returns:
+{
+  "verdict": "approved",
+  "confidence": 0.60,
+  "rationale": "Chairman resolved deadlock based on...",
+  "deadlocked": true  # Flag indicates tie-breaker was needed
+}
+```
+
+**Constructive Dissent:**
+
+Extract minority opinions from Stage 2 peer reviews:
+
+```python
+result = await consult_council(
+    query="Should we migrate to microservices?",
+    verdict_type="binary",
+    include_dissent=True
+)
+
+# Returns:
+{
+  "verdict": "approved",
+  "confidence": 0.70,
+  "rationale": "Majority supports migration...",
+  "dissent": "Minority perspective: One reviewer noted scalability concerns with current team size."
+}
+```
+
+**Dissent Algorithm:**
+1. Collect all scores from Stage 2 peer reviews
+2. Calculate median and standard deviation per response
+3. Identify outliers (score < median - 1.5 × std)
+4. Extract evaluation text from outliers
+5. Format as minority perspective
+
+**Example: CI/CD Gate Integration:**
+
+```python
+import asyncio
+from llm_council.council import run_full_council
+from llm_council.verdict import VerdictType
+
+async def review_pull_request(pr_diff: str, pr_description: str):
+    """Use LLM Council as a PR review gate."""
+    query = f"""
+    Review this pull request and determine if it should be approved.
+
+    Description: {pr_description}
+
+    Changes:
+    {pr_diff}
+    """
+
+    stage1, stage2, stage3, metadata = await run_full_council(
+        query,
+        verdict_type=VerdictType.BINARY,
+        include_dissent=True
+    )
+
+    verdict = metadata.get("verdict", {})
+
+    if verdict.get("verdict") == "approved" and verdict.get("confidence", 0) >= 0.7:
+        return True, verdict.get("rationale")
+    else:
+        return False, f"{verdict.get('rationale')}\n\nDissent: {verdict.get('dissent', 'None')}"
+```
+
+**Defaults:** `verdict_type` is a **per-request parameter** (tool/API/facade),
+not an environment variable. Deadlock detection uses a fixed 0.1 Borda-spread
+threshold (`detect_deadlock`); dissent extraction thresholds are internal
+constants in `dissent.py`. (Earlier docs listed VERDICT_TYPE / DEADLOCK_THRESHOLD / DISSENT_THRESHOLD
+environment variables — those never shipped.)
+
+### Structured Rubric Scoring (ADR-016)
+
+By default, reviewers provide a single 1-10 holistic score. With rubric scoring enabled, reviewers score each response on five dimensions:
+
+| Dimension | Weight | Description |
+|-----------|--------|-------------|
+| **Accuracy** | 35% | Factual correctness, no hallucinations |
+| **Relevance** | 10% | Addresses the actual question asked |
+| **Completeness** | 20% | Covers all aspects of the question |
+| **Conciseness** | 15% | Efficient communication, no padding |
+| **Clarity** | 20% | Well-organized, easy to understand |
+
+**Accuracy Ceiling**: When enabled (default), accuracy acts as a ceiling on the overall score:
+- Accuracy < 5: Score caps at 4.0 (40%) — "significant errors or worse"
+- Accuracy 5-6: Score caps at 7.0 (70%) — "mixed accuracy"
+- Accuracy ≥ 7: No ceiling — "mostly accurate or better"
+
+This prevents well-written hallucinations from ranking well.
+
+**Scoring Anchors**: Each score level has defined behavioral meaning (see [ADR-016](docs/adr/ADR-016-structured-rubric-scoring.md)):
+- 9-10: Excellent (completely accurate, comprehensive, crystal clear)
+- 7-8: Good (mostly accurate, covers main points)
+- 5-6: Mixed (some errors or gaps)
+- 3-4: Poor (significant issues)
+- 1-2: Failing (fundamentally flawed)
+
+```bash
+# Enable rubric scoring
+export LLM_COUNCIL_RUBRIC_SCORING=true
+
+# Customize weights (must sum to 1.0)
+export LLM_COUNCIL_WEIGHT_ACCURACY=0.40
+export LLM_COUNCIL_WEIGHT_RELEVANCE=0.10
+export LLM_COUNCIL_WEIGHT_COMPLETENESS=0.20
+export LLM_COUNCIL_WEIGHT_CONCISENESS=0.10
+export LLM_COUNCIL_WEIGHT_CLARITY=0.20
+```
+
+### Safety Gate (ADR-016)
+
+When enabled, a pass/fail safety check runs before rubric scoring to filter harmful content:
+
+| Pattern | Description |
+|---------|-------------|
+| **dangerous_instructions** | Weapons, explosives, harmful devices |
+| **weapon_making** | Firearm/weapon construction |
+| **malware_hacking** | Unauthorized access, malware |
+| **self_harm** | Self-harm encouragement |
+| **pii_exposure** | Personal information leakage |
+
+Responses that fail safety checks are capped at score 0 regardless of other dimension scores. Educational/defensive content is context-aware and allowed.
+
+```bash
+# Enable safety gate
+export LLM_COUNCIL_SAFETY_GATE=true
+
+# Customize score cap (default: 0)
+export LLM_COUNCIL_SAFETY_SCORE_CAP=0.0
+```
+
+### Bias Auditing (ADR-015)
+
+When enabled, the council reports per-session bias indicators from peer review scoring:
+
+| Bias Type | Description | Detection Threshold |
+|-----------|-------------|---------------------|
+| **Length-Score Correlation** | Do longer responses score higher? | \|r\| > 0.3 |
+| **Reviewer Calibration** | Are some reviewers harsh/generous relative to peers? | Mean ± 1 std from median |
+| **Position Bias** | Does presentation order affect scores? | Variance > 0.5 |
+
+**Output**: The metadata includes a `bias_audit` object with:
+- `length_score_correlation`: Pearson correlation coefficient
+- `length_bias_detected`: Boolean flag
+- `position_score_variance`: Variance of mean scores by presentation position
+- `position_bias_detected`: Boolean flag (derived from anonymization labels A, B, C...)
+- `harsh_reviewers` / `generous_reviewers`: Lists of biased reviewers
+- `overall_bias_risk`: "low", "medium", or "high"
+
+**Important Limitations**: With only 4-5 models per session, these metrics have limited statistical power:
+- Length correlation with n=5 data points can only detect *extreme* biases
+- Position bias from a single ordering cannot distinguish position effects from quality differences
+- Reviewer calibration is relative to the current session only
+
+These are **per-session indicators** (red flags for extreme anomalies), not statistically robust proof of systematic bias. Interpret with appropriate caution.
+
+```bash
+# Enable bias auditing
+export LLM_COUNCIL_BIAS_AUDIT=true
+
+# Customize thresholds (optional)
+export LLM_COUNCIL_LENGTH_CORRELATION_THRESHOLD=0.3
+export LLM_COUNCIL_POSITION_VARIANCE_THRESHOLD=0.5
+```
+
+### Cross-Session Bias Aggregation (ADR-018)
+
+For statistically meaningful bias detection across multiple sessions, enable bias persistence:
+
+```bash
+# Enable bias persistence (stores metrics locally)
+export LLM_COUNCIL_BIAS_PERSISTENCE=true
+
+# Consent level: 0=off, 1=local only (default), 2=anonymous, 3=enhanced, 4=research
+export LLM_COUNCIL_BIAS_CONSENT=1
+
+# Store path (default: ~/.llm-council/bias_metrics.jsonl)
+export LLM_COUNCIL_BIAS_STORE=~/.llm-council/bias_metrics.jsonl
+```
+
+**Generate cross-session bias reports:**
+
+```bash
+# Text report (default)
+llm-council bias-report
+
+# JSON output
+llm-council bias-report --format json
+
+# Include detailed reviewer profiles
+llm-council bias-report --verbose
+
+# Limit to last 50 sessions
+llm-council bias-report --sessions 50
+```
+
+**Statistical confidence tiers:**
+
+| Sessions | Confidence | UI Treatment |
+|----------|------------|--------------|
+| N < 10 | Insufficient | "Collecting data..." |
+| 10-19 | Preliminary | Warning shown |
+| 20-49 | Moderate | CIs displayed |
+| N >= 50 | High | Full analysis |
+
+### Output Quality Metrics (ADR-036)
+
+Quantify the reliability and quality of council outputs with three core metrics:
+
+| Metric | Range | Description |
+|--------|-------|-------------|
+| **Consensus Strength Score (CSS)** | 0.0-1.0 | Agreement among council members in Stage 2 rankings |
+| **Deliberation Depth Index (DDI)** | 0.0-1.0 | Thoroughness of the deliberation process |
+| **Synthesis Attribution Score (SAS)** | 0.0-1.0 | How well synthesis traces back to source responses |
+
+**CSS Interpretation:**
+
+| Score | Interpretation | Action |
+|-------|---------------|--------|
+| 0.85+ | Strong consensus | High confidence in synthesis |
+| 0.70-0.84 | Moderate consensus | Note minority views |
+| 0.50-0.69 | Weak consensus | Consider `include_dissent=true` |
+| <0.50 | Significant disagreement | Use debate mode |
+
+**SAS Components:**
+- `winner_alignment`: Similarity to top-ranked responses
+- `max_source_alignment`: Best match to any response
+- `hallucination_risk`: 1 - max_source_alignment
+- `grounded`: True if synthesis traces to sources (threshold: 0.6)
+
+**Usage:**
+
+Quality metrics are automatically included in metadata:
+
+```python
+stage1, stage2, stage3, metadata = await run_full_council(query)
+
+quality = metadata.get("quality_metrics", {})
+core = quality.get("core", {})
+
+print(f"Consensus: {core['consensus_strength']:.2f}")
+print(f"Depth: {core['deliberation_depth']:.2f}")
+print(f"Grounded: {core['synthesis_attribution']['grounded']}")
+```
+
+**MCP Tool Output:**
+
+The `consult_council` MCP tool displays quality metrics with visual bars:
+
+```
+### Quality Metrics
+- **Consensus Strength**: 0.82 [████████░░]
+- **Deliberation Depth**: 0.74 [███████░░░]
+- **Synthesis Grounded**: ✓ (alignment: 0.89)
+```
+
+**Environment Variables:**
+
+```bash
+# Enable/disable quality metrics (default: true)
+export LLM_COUNCIL_QUALITY_METRICS=true
+
+# Quality tier: core (OSS), standard, enterprise
+export LLM_COUNCIL_QUALITY_TIER=core
+```
+
+### Gateway Layer (ADR-023)
+
+> **Status note:** the `GatewayRouter` class-based abstraction below is real,
+> importable code, but it is **not currently reachable via configuration or
+> environment variables** — the "Enable the gateway layer" switch further
+> down does not exist in the codebase, and `GatewayConfig` has no `enabled`
+> field to turn on the `USE_GATEWAY_LAYER` flag that `llm_council.gateway_adapter`
+> checks. Live traffic is routed by the simpler `gateways.default` /
+> `gateways.providers.*` / `gateways.model_name_map` config documented under
+> [Option 2: YAML Configuration](#option-2-yaml-configuration-recommended)
+> above, via `llm_council.gateway.resolver`, not by the code on this page.
+> Tracked in [#524](https://github.com/amiable-dev/llm-council/issues/524).
+
+The gateway layer provides an abstraction over LLM API requests with multiple gateway options:
+
+**Available Gateways:**
+| Gateway | Description | Key Features |
+|---------|-------------|--------------|
+| `OpenRouterGateway` | Routes through OpenRouter | 100+ models, single API key |
+| `RequestyGateway` | Routes through Requesty | BYOK support, analytics |
+| `DirectGateway` | Direct provider APIs | Anthropic, OpenAI, Google |
+| `OllamaGateway` | Local LLMs via Ollama | Air-gapped, cost-free, privacy-first |
+
+**Core Features:**
+- **Circuit Breaker**: Prevents cascading failures (CLOSED → OPEN → HALF_OPEN → CLOSED)
+- **Fallback Chains**: Automatic retry with secondary gateways on failure
+- **Per-Gateway Metrics**: Track failure counts, latency, and health status
+- **BYOK Support**: Bring Your Own Key for Requesty and Direct gateways
+
+**Basic Usage:**
+
+```python
+from llm_council.gateway import (
+    GatewayRouter, GatewayRequest, CanonicalMessage, ContentBlock,
+    OpenRouterGateway, RequestyGateway, DirectGateway
+)
+
+# Single gateway (OpenRouter)
+router = GatewayRouter()
+
+# Multi-gateway with fallback
+router = GatewayRouter(
+    gateways={
+        "openrouter": OpenRouterGateway(),
+        "requesty": RequestyGateway(byok_enabled=True, byok_keys={"anthropic": "sk-ant-..."}),
+        "direct": DirectGateway(provider_keys={"openai": "sk-..."}),
+    },
+    default_gateway="openrouter",
+    fallback_chains={"openrouter": ["requesty", "direct"]}
+)
+
+request = GatewayRequest(
+    model="openai/gpt-4o",
+    messages=[CanonicalMessage(role="user", content=[ContentBlock(type="text", text="Hello")])]
+)
+response = await router.complete(request)
+```
+
+**Enable the gateway layer:**
+
+There is currently no supported way to enable `GatewayRouter` for live
+council traffic (see the status note above) — the environment variable
+previously documented here does not exist in the codebase and setting it
+silently does nothing. To route council queries through Requesty or a
+custom OpenRouter endpoint today, use `gateways.default` /
+`gateways.providers.*` in the YAML config instead (see
+[Option 2: YAML Configuration](#option-2-yaml-configuration-recommended)).
+
+```bash
+# Configure specific gateway credentials (read regardless of which
+# routing path is active):
+export REQUESTY_API_KEY=your-requesty-key    # For Requesty
+export ANTHROPIC_API_KEY=sk-ant-...           # For Direct (Anthropic)
+export OPENAI_API_KEY=sk-...                  # For Direct (OpenAI)
+export GOOGLE_API_KEY=...                     # For Direct (Google)
+```
+
+**Circuit Breaker Behavior:**
+- Default: 5 failures to trip the circuit
+- Recovery timeout: 60 seconds
+- Half-open state allows test requests to check recovery
+- Open circuits are skipped in fallback chain
+
+The gateway layer is currently **opt-in** (default: disabled) for backward compatibility.
+
+### Triage Layer (ADR-020)
+
+The triage layer provides query classification, model selection optimizations, and confidence-gated routing:
+
+- **Confidence-Gated Fast Path**: Routes simple queries to a single model, escalating to full council when confidence is low
+- **Shadow Council Sampling**: Random 5% sampling validates fast path quality against full council
+- **Rollback Monitoring**: Automatic rollback when disagreement/escalation rates breach thresholds
+- **Wildcard Selection**: Adds domain-specialized models to the council based on query classification
+- **Prompt Optimization**: Per-model prompt adaptation (Claude gets XML, OpenAI gets Markdown)
+- **Complexity Classification**: Heuristic-based with optional Not Diamond API integration
+
+**Domain Categories:**
+| Domain | Description | Specialist Models |
+|--------|-------------|-------------------|
+| CODE | Programming, debugging, algorithms | DeepSeek, Codestral |
+| REASONING | Math, logic, proofs | o1-preview, DeepSeek-R1 |
+| CREATIVE | Stories, poems, fiction | Claude Opus, Command-R+ |
+| MULTILINGUAL | Translation, language | GPT-4o, Command-R+ |
+| GENERAL | General knowledge | Llama 3 (fallback) |
+
+**Enable wildcard selection:**
+
+```bash
+export LLM_COUNCIL_WILDCARD_ENABLED=true
+```
+
+This automatically adds a domain specialist to the council based on query classification. For example, a Python coding question will add a DeepSeek model alongside the default council.
+
+**Enable prompt optimization:**
+
+```bash
+export LLM_COUNCIL_PROMPT_OPTIMIZATION_ENABLED=true
+```
+
+This applies per-model prompt formatting. Claude receives XML-structured prompts, while other providers receive their preferred format.
+
+**Enable confidence-gated fast path:**
+
+```bash
+export LLM_COUNCIL_FAST_PATH_ENABLED=true
+export LLM_COUNCIL_FAST_PATH_CONFIDENCE_THRESHOLD=0.92  # default
+```
+
+When enabled, simple queries are routed to a single model. If the model's confidence is below the threshold, the query automatically escalates to the full council. This can reduce costs by 45-55% on simple queries while maintaining quality.
+
+**Fast Path Quality Monitoring:**
+
+The fast path includes built-in quality monitoring:
+
+| Metric | Threshold | Action |
+|--------|-----------|--------|
+| Shadow disagreement rate | > 8% | Automatic rollback |
+| User escalation rate | > 15% | Automatic rollback |
+| Error rate | > 1.5x baseline | Automatic rollback |
+
+Configure monitoring:
+
+```bash
+export LLM_COUNCIL_SHADOW_SAMPLE_RATE=0.05  # 5% shadow sampling
+export LLM_COUNCIL_ROLLBACK_ENABLED=true
+export LLM_COUNCIL_ROLLBACK_WINDOW=100  # rolling window size
+```
+
+**Optional Not Diamond Integration:**
+
+For advanced model routing, integrate with [Not Diamond](https://notdiamond.ai):
+
+```bash
+export NOT_DIAMOND_API_KEY="your-key"
+export LLM_COUNCIL_USE_NOT_DIAMOND=true
+```
+
+When Not Diamond is unavailable, the system gracefully falls back to heuristic-based classification.
+
+The triage layer is currently **opt-in** (default: disabled) for backward compatibility.
+
+### Local LLM Support (ADR-025)
+
+Run council deliberations entirely on local hardware using Ollama:
+
+```bash
+# Install with Ollama support
+pip install "llm-council-core[ollama]"
+
+# Start Ollama (if not already running)
+ollama serve
+
+# Pull a model
+ollama pull llama3.2
+```
+
+**Use local models in your council:**
+
+```bash
+# Mix local and cloud models
+export LLM_COUNCIL_MODELS="ollama/llama3.2,openai/gpt-4o,anthropic/claude-3-5-sonnet"
+
+# Or use only local models (air-gapped mode)
+export LLM_COUNCIL_MODELS="ollama/llama3.2,ollama/mistral,ollama/codellama"
+export LLM_COUNCIL_CHAIRMAN="ollama/llama3.2"
+```
+
+**Hardware Requirements:**
+
+| Profile | Hardware | Models | Use Case |
+|---------|----------|--------|----------|
+| Minimum | 8+ core CPU, 16GB RAM | 7B quantized | Dev/testing |
+| Recommended | M-series Pro, 32GB unified | 7B-13B | Small council |
+| Professional | 2x RTX 4090, 64GB+ | 70B quantized | Production |
+| Enterprise | Mac Studio 64GB+ | Multiple 70B | Air-gapped |
+
+**Quality Degradation Notice**: Local models typically have reduced capabilities compared to cloud-hosted frontier models. The gateway includes quality notices in responses to inform users when local models are used.
+
+**Configuration:**
+
+```bash
+# Ollama endpoint (default: http://localhost:11434)
+export LLM_COUNCIL_OLLAMA_BASE_URL=http://localhost:11434
+
+# Timeout for local models (default: 120s - first load can be slow)
+export LLM_COUNCIL_OLLAMA_TIMEOUT=120.0
+```
+
+### Webhook Notifications (ADR-025)
+
+Receive real-time notifications as the council deliberates:
+
+```python
+from llm_council.webhooks import WebhookConfig, WebhookDispatcher, WebhookPayload
+
+# Configure webhook endpoint
+config = WebhookConfig(
+    url="https://your-server.com/webhook",
+    events=["council.complete", "council.error"],
+    secret="your-hmac-secret"  # Optional, for signature verification
+)
+
+# Dispatch events (used internally by council)
+dispatcher = WebhookDispatcher()
+result = await dispatcher.dispatch(config, payload)
+```
+
+**Event Types:**
+
+| Event | Description | Payload |
+|-------|-------------|---------|
+| `council.deliberation_start` | Council begins | request_id, models |
+| `council.stage1.complete` | All initial responses received | response_count |
+| `model.vote_cast` | A model submitted rankings | voter, ranking |
+| `council.stage2.complete` | All rankings complete | aggregate_rankings |
+| `council.complete` | Final answer ready | stage3_response, duration_ms |
+| `council.error` | Error occurred | error, partial_results |
+
+**HMAC Signature Verification:**
+
+Webhooks are signed using HMAC-SHA256 for security:
+
+```python
+from llm_council.webhooks import verify_webhook_request
+
+# Verify incoming webhook (in your server)
+is_valid = verify_webhook_request(
+    payload=request.body,
+    headers=request.headers,
+    secret="your-hmac-secret"
+)
+```
+
+Headers included:
+- `X-Council-Signature`: `sha256=<hex-digest>`
+- `X-Council-Timestamp`: Unix timestamp
+- `X-Council-Version`: `1.0`
+
+**Configuration:**
+
+```bash
+# Webhook timeout (default: 5s)
+export LLM_COUNCIL_WEBHOOK_TIMEOUT=5.0
+
+# Max retry attempts (default: 3)
+export LLM_COUNCIL_WEBHOOK_RETRIES=3
+
+# Require HTTPS (except localhost) - default: true
+export LLM_COUNCIL_WEBHOOK_HTTPS_ONLY=true
+```
+
+### SSE Streaming (ADR-025)
+
+Stream council events in real-time using Server-Sent Events.
+
+**Built-in HTTP Server:**
+
+The library includes a built-in HTTP server with SSE streaming:
+
+```bash
+# Install with HTTP server support
+pip install "llm-council-core[http]"
+
+# Start the server
+llm-council serve
+```
+
+The SSE endpoint is available at `GET /v1/council/stream`:
+
+```bash
+# Stream council deliberation
+curl -N "http://localhost:8000/v1/council/stream?prompt=What+is+AI"
+```
+
+**Custom Integration:**
+
+For custom FastAPI/Starlette applications:
+
+```python
+from llm_council.webhooks import (
+    council_event_generator,
+    SSE_CONTENT_TYPE,
+    get_sse_headers
+)
+
+# In your FastAPI/Starlette endpoint
+@app.get("/v1/council/stream")
+async def stream_council(prompt: str):
+    return StreamingResponse(
+        council_event_generator(prompt, models=None, api_key=None),
+        media_type=SSE_CONTENT_TYPE,
+        headers=get_sse_headers()
+    )
+```
+
+**Client-side (JavaScript):**
+
+```javascript
+const source = new EventSource('/v1/council/stream?prompt=...');
+
+source.addEventListener('council.deliberation_start', (e) => {
+  console.log('Started:', JSON.parse(e.data));
+});
+
+source.addEventListener('council.complete', (e) => {
+  const result = JSON.parse(e.data);
+  console.log('Final answer:', result.stage3_response);
+  source.close();
+});
+```
+
+### Offline Mode (ADR-026)
+
+Run LLM Council without any external metadata calls using the bundled model registry:
+
+```bash
+# Enable offline mode
+export LLM_COUNCIL_OFFLINE=true
+```
+
+When offline mode is enabled:
+- Uses `StaticRegistryProvider` exclusively with 31 bundled models
+- No external API calls for metadata (context windows, pricing, capabilities)
+- All core council operations continue to work
+- Unknown models use safe defaults (4096 context window)
+
+This implements the "Sovereign Orchestrator" philosophy: the system must function as a complete, independent utility without external dependencies.
+
+**Bundled Models (31 total):**
+
+| Provider | Count | Examples |
+|----------|-------|----------|
+| OpenAI | 9 | gpt-4o, gpt-4o-mini, gpt-5.2, gpt-5-mini, o1, o1-preview, o1-mini, o3-mini |
+| Anthropic | 6 | claude-opus-4.7, claude-opus-4.6, claude-sonnet-4.6, claude-haiku-4.5 |
+| Google | 5 | gemini-3-pro, gemini-2.5-pro, gemini-2.0-flash, gemini-1.5-pro |
+| xAI | 2 | grok-4, grok-4.1-fast |
+| DeepSeek | 2 | deepseek-r1, deepseek-chat |
+| Meta | 2 | llama-3.3-70b, llama-3.1-405b |
+| Mistral | 2 | mistral-large-2411, mistral-medium |
+| Ollama | 6 | llama3.2, mistral, qwen2.5:14b, codellama, phi3 |
+
+**Model Metadata API:**
+
+```python
+from llm_council.metadata import get_provider
+
+# Get the metadata provider
+provider = get_provider()
+
+# Query model information
+info = provider.get_model_info("openai/gpt-4o")
+print(f"Context window: {info.context_window}")  # 128000
+print(f"Quality tier: {info.quality_tier}")      # frontier
+
+# Check capabilities
+window = provider.get_context_window("anthropic/claude-opus-4.7")  # 1000000
+supports = provider.supports_reasoning("openai/o1")  # True
+
+# List all available models
+models = provider.list_available_models()  # 31 models
+```
+
+### Agent Skills (ADR-034)
+
+LLM Council includes agent skills for AI-assisted code verification, review, and CI/CD quality gates. Skills use progressive disclosure to minimize token usage while providing detailed scoring rubrics when needed.
+
+**Available Skills:**
+
+| Skill | Category | Use Case |
+|-------|----------|----------|
+| `council-verify` | verification | General work verification with multi-dimensional scoring |
+| `council-review` | code-review | PR reviews with security, performance, and testing focus |
+| `council-gate` | ci-cd | Quality gates for pipelines with exit codes (0=PASS, 1=FAIL, 2=UNCLEAR) |
+
+**Exit Codes for CI/CD:**
+
+```bash
+# In GitHub Actions or any CI pipeline
+llm-council gate --snapshot $GITHUB_SHA --rubric-focus Security
+
+# Exit codes:
+# 0 = PASS (confidence >= threshold, no blocking issues)
+# 1 = FAIL (blocking issues present)
+# 2 = UNCLEAR (needs human review)
+```
+
+**Skills are located in `.github/skills/`** and work with Claude Code, VS Code Copilot, Cursor, and other MCP-compatible clients.
+
+For detailed documentation, see the [Skills Guide](https://llm-council.dev/guides/skills/).
+
+### All Environment Variables
+
+> **Canonical reference:** the complete, drift-tested list lives at
+> [docs/reference/environment-variables.md](https://llm-council.dev/reference/environment-variables/)
+> — a CI test fails if code reads a variable missing there or it documents one
+> that no longer exists. The tables below are a curated subset. Some knobs are
+> YAML-only (`llm_council.yaml`, ADR-031) and marked as such.
+
+#### Gateway Configuration (ADR-023)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENROUTER_API_KEY` | OpenRouter API key | Required for OpenRouter gateway |
+| `REQUESTY_API_KEY` | Requesty API key | Required for Requesty gateway |
+| `ANTHROPIC_API_KEY` | Anthropic API key | Required for Direct gateway (Anthropic) |
+| `OPENAI_API_KEY` | OpenAI API key | Required for Direct gateway (OpenAI) |
+| `GOOGLE_API_KEY` | Google API key | Required for Direct gateway (Google) |
+| `LLM_COUNCIL_DEFAULT_GATEWAY` | Default gateway (openrouter/requesty/direct) | openrouter |
+| *(YAML)* `gateways.enabled` | Enable gateway layer with circuit breaker (no env var) | false |
+
+#### Ollama Configuration (ADR-025)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLM_COUNCIL_OLLAMA_BASE_URL` | Ollama API endpoint | http://localhost:11434 |
+| `LLM_COUNCIL_OLLAMA_TIMEOUT` | Timeout for Ollama requests (seconds) | 120.0 |
+
+#### Webhook Configuration (ADR-025)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLM_COUNCIL_WEBHOOK_TIMEOUT` | Webhook POST timeout (seconds) | 5.0 |
+| `LLM_COUNCIL_WEBHOOK_RETRIES` | Max retry attempts | 3 |
+| *(YAML)* webhooks `https_only` | Require HTTPS (except localhost; no env var) | true |
+
+#### Council Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLM_COUNCIL_MODELS` | Comma-separated model list | GPT-5.1, Gemini 3 Pro, Claude 4.5, Grok 4 |
+| `LLM_COUNCIL_CHAIRMAN` | Chairman model for every tier (unset: each tier's own aggregator, #725) | unset |
+| `LLM_COUNCIL_MODE` | `consensus` or `debate` | consensus |
+| `LLM_COUNCIL_EXCLUDE_SELF_VOTES` | Exclude self-votes | true |
+| `LLM_COUNCIL_STYLE_NORMALIZATION` | Enable style normalization | false |
+| `LLM_COUNCIL_NORMALIZER_MODEL` | Model for normalization | google/gemini-2.0-flash-001 |
+| `LLM_COUNCIL_MAX_REVIEWERS` | Max reviewers per response | null (all) |
+| `RUBRIC_SCORING_ENABLED` | Enable multi-dimensional rubric scoring (ADR-031 name) | false |
+| *(YAML)* `evaluation.rubric` accuracy ceiling | Accuracy caps the weighted score (no env var) | true |
+| `LLM_COUNCIL_WEIGHT_*` | Rubric dimension weights (ACCURACY, RELEVANCE, COMPLETENESS, CONCISENESS, CLARITY) | See above |
+| `SAFETY_GATE_ENABLED` | Enable safety pre-check gate (ADR-031 name) | false |
+| *(YAML)* `evaluation.safety` score cap | Score cap for failed safety checks (no env var) | 0.0 |
+| `BIAS_AUDIT_ENABLED` | Enable bias auditing (ADR-015; ADR-031 name) | false |
+| *(YAML)* `evaluation.bias.length_correlation_threshold` | Length-score correlation threshold (no env var) | 0.3 |
+| *(YAML)* `evaluation.bias.position_variance_threshold` | Position variance threshold (no env var) | 0.5 |
+| `BIAS_PERSISTENCE_ENABLED` | Enable cross-session bias storage (ADR-018; ADR-031 name) | false |
+| *(YAML)* `evaluation.bias.store_path` | Path to bias metrics JSONL (no env var) | data/bias_metrics.jsonl |
+| *(YAML)* `evaluation.bias.consent_level` | OFF / LOCAL_ONLY / ANONYMOUS / ENHANCED / RESEARCH (no env var) | LOCAL_ONLY |
+| *(CLI)* `bias-report --max-sessions / --max-days` | Aggregation windows moved to CLI flags | 100 / 30 |
+| `LLM_COUNCIL_HASH_SECRET` | Secret for query hashing (RESEARCH consent only) | dev-secret |
+| `LLM_COUNCIL_SUPPRESS_WARNINGS` | Suppress security warnings | false |
+| `LLM_COUNCIL_MODELS_QUICK` | Models for quick tier (ADR-022) | gpt-4o-mini, haiku, gemini-flash |
+| `LLM_COUNCIL_MODELS_BALANCED` | Models for balanced tier (ADR-022) | gpt-4o, sonnet, gemini-pro |
+| `LLM_COUNCIL_MODELS_HIGH` | Models for high tier (ADR-022) | gpt-4o, opus, gemini-3-pro, grok-4 |
+| `LLM_COUNCIL_MODELS_REASONING` | Models for reasoning tier (ADR-022) | gpt-5.2, opus, o1-preview, deepseek-r1 |
+| `LLM_COUNCIL_WILDCARD_ENABLED` | Enable wildcard specialist selection (ADR-020) | false |
+| `LLM_COUNCIL_PROMPT_OPTIMIZATION_ENABLED` | Enable per-model prompt optimization (ADR-020) | false |
+| `LLM_COUNCIL_FAST_PATH_ENABLED` | Confidence-gated fast path (ADR-020) | false |
+| `LLM_COUNCIL_FAST_PATH_CONFIDENCE_THRESHOLD` | Fast-path confidence threshold | 0.92 |
+| `NOT_DIAMOND_API_KEY` | Not Diamond API key (optional) | - |
+| `LLM_COUNCIL_USE_NOT_DIAMOND` | Enable Not Diamond API integration | false |
+| `LLM_COUNCIL_NOT_DIAMOND_TIMEOUT` | Not Diamond API timeout in seconds | 5.0 |
+| `LLM_COUNCIL_NOT_DIAMOND_CACHE_TTL` | Not Diamond response cache TTL in seconds | 300 |
+
+## Credits & Attribution Continued
+
+This project is a derivative work based on the original [llm-council](https://github.com/karpathy/llm-council) by Andrej Karpathy.
+
+**Original Work:**
+- Concept and 3-stage council orchestration: Andrej Karpathy
+- Core council logic (Stage 1-3 process)
+- OpenRouter integration
+
+**Derivative Work by Amiable:**
+- MCP (Model Context Protocol) server implementation
+- Removal of web frontend (focus on MCP functionality)
+- Python package structure for PyPI distribution
+- User-configurable model selection
+- Enhanced features (style normalization, self-vote exclusion, synthesis modes)
+- Test suite and modern packaging standards
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.

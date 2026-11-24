@@ -1,0 +1,295 @@
+"""
+Verification result formatting per ADR-034.
+
+Provides human-readable formatted output for verification results
+with emoji indicators, tables, and structured sections.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+
+# Verdict emoji mapping
+VERDICT_EMOJIS = {
+    "pass": "✅",
+    "fail": "❌",
+    "unclear": "⚠️",
+}
+
+# Rubric dimension display names
+RUBRIC_DIMENSIONS = [
+    ("accuracy", "Accuracy"),
+    ("relevance", "Relevance"),
+    ("completeness", "Completeness"),
+    ("conciseness", "Conciseness"),
+    ("clarity", "Clarity"),
+]
+
+
+def _list_of(value: Any, kind: type) -> List[Any]:
+    """The items of ``value`` that are ``kind``; [] unless it is a list. A
+    malformed receipt must not crash the banner that reports it."""
+    return [item for item in value if isinstance(item, kind)] if isinstance(value, list) else []
+
+
+def _coverage_lines(coverage: Dict[str, Any]) -> List[str]:
+    """#704: name what was reviewed and what was not.
+
+    A verdict line alone cannot show that the council reviewed nothing, which
+    is how an empty-subject gate passed three PRs unnoticed. With the files
+    listed, a reader of the CI step summary sees the subject of the verdict.
+    """
+    if not coverage:
+        return []
+    reviewed = _list_of(coverage.get("reviewed"), str)
+    omitted = _list_of(coverage.get("omitted"), dict)
+    lines = [f"### Files reviewed ({len(reviewed)})"]
+    lines.extend(f"- {path}" for path in reviewed[:50])
+    if len(reviewed) > 50:
+        lines.append(f"- … and {len(reviewed) - 50} more")
+    if omitted:
+        listed = ", ".join(f"{o.get('path')} ({o.get('reason')})" for o in omitted[:20])
+        more = f", … and {len(omitted) - 20} more" if len(omitted) > 20 else ""
+        # Blank line first: directly after a list it would render as part of
+        # the last bullet.
+        lines.extend(["", f"**Omitted ({len(omitted)})**: {listed}{more}"])
+    lines.append("")
+    return lines
+
+
+#: Banner and explanation per `error` marker. Unknown markers get a generic
+#: "did not run" banner rather than falling through to the verdict table.
+_NOT_RUN_BANNERS = {
+    "input_too_large": (
+        "INPUT TOO LARGE",
+        "the input exceeded the tier's size limit, so this is NOT a "
+        "pass/fail/unclear verdict and must not be treated as a passed gate. "
+        "Reduce scope, split the input, or use a higher tier.",
+    ),
+    "no_reviewable_content": (
+        "NOTHING REVIEWED",
+        "no reviewable file resolved from the snapshot, so this is NOT a "
+        "pass/fail/unclear verdict and must not be treated as a passed gate.",
+    ),
+}
+
+
+def _discovery_lines(result: Dict[str, Any]) -> List[str]:
+    """The discovery warnings: what tells "nothing reviewable" apart from
+    "discovery failed" (a shallow clone, a root commit), and a degraded
+    discovery apart from a clean one on an ordinary verdict."""
+    raw = result.get("expansion_warnings")
+    warnings = [w for w in raw if isinstance(w, str)] if isinstance(raw, list) else []
+    if not warnings:
+        return []
+    lines = ["**Discovery**:"]
+    lines.extend(f"- {w}" for w in warnings[:10])
+    if len(warnings) > 10:
+        lines.append(f"- … and {len(warnings) - 10} more")
+    lines.append("")
+    return lines
+
+
+def _format_not_run(result: Dict[str, Any]) -> str:
+    error = result.get("error")
+    banner, explanation = _NOT_RUN_BANNERS.get(
+        error if isinstance(error, str) else "",
+        (
+            "DID NOT RUN",
+            f"the run stopped before a verdict ({error}), so this is NOT a "
+            "pass/fail/unclear verdict and must not be treated as a passed gate.",
+        ),
+    )
+    lines = [f"Council Verification Result: {banner} 🚫", "", f"> The council **did not run**: {explanation}", ""]
+    rationale = result.get("rationale")
+    if rationale:
+        lines.extend([f"**Detail**: {rationale}", ""])
+    lines.extend(_discovery_lines(result))
+    coverage = result.get("coverage")
+    lines.extend(_coverage_lines(coverage if isinstance(coverage, dict) else {}))
+    transcript = result.get("transcript_location")
+    if transcript:
+        lines.append(f"**Transcript**: {transcript}")
+    return "\n".join(lines).rstrip("\n")
+
+
+def format_verification_result(result: Dict[str, Any]) -> str:
+    """
+    Format verification result for human-readable display.
+
+    Produces formatted output with:
+    - Verdict with emoji indicator
+    - Confidence score
+    - Exit code
+    - Rubric scores table
+    - Blocking issues (if any)
+    - Transcript location
+    - Rationale summary
+
+    Args:
+        result: Verification result dictionary from run_verification()
+
+    Returns:
+        Formatted string suitable for terminal/markdown display
+    """
+    lines: List[str] = []
+
+    # #357 / #704: a run the council never made is NOT a verdict, and must
+    # not be formatted like one. Any `error` marker takes this path, including
+    # one this formatter does not know yet: falling through to the verdict
+    # table is exactly how a run that reviewed nothing came to read as UNCLEAR.
+    if result.get("error"):
+        return _format_not_run(result)
+
+    # Header with verdict and emoji
+    verdict = (result.get("verdict") or "unclear").lower()
+    emoji = VERDICT_EMOJIS.get(verdict, "❓")
+    lines.append(f"Council Verification Result: {verdict.upper()} {emoji}")
+    lines.append("")
+
+    # Metrics table
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+
+    # Verdict row
+    exit_code = result.get("exit_code")
+    if exit_code is None:
+        exit_code = 2
+    lines.append(f"| Verdict | {verdict.upper()} (exit code {exit_code}) |")
+
+    # Confidence row
+    confidence = result.get("confidence") or 0.0
+    lines.append(f"| Confidence | {confidence:.2f} |")
+
+    # ADR-047 P2 (#414): show calibrated confidence when it diverges from raw
+    confidence_calibrated = result.get("confidence_calibrated")
+    if confidence_calibrated is not None and confidence_calibrated != confidence:
+        lines.append(f"| Confidence (calibrated) | {confidence_calibrated:.2f} |")
+
+    # ADR-047 P1 (#413): machine-readable UNCLEAR cause
+    unclear_reason = result.get("unclear_reason")
+    if unclear_reason:
+        hints = {
+            "infra_failure": "chairman call errored — check billing/auth, then retry",
+            "low_confidence": "deliberation completed below threshold — accept-and-audit per policy",
+            "timeout": "global deadline fired — retry at a HIGHER tier or reduce scope",
+            "chairman_disabled": "chairman synthesis was skipped by config — no verdict was computed",
+        }
+        hint = hints.get(unclear_reason, "")
+        suffix = f" ({hint})" if hint else ""
+        lines.append(f"| Unclear reason | {unclear_reason}{suffix} |")
+
+    # #597: retry guidance after a starved run
+    retry = result.get("retry_hint")
+    if isinstance(retry, dict) and retry.get("message"):
+        lines.append(f"| Next step | {retry['message']} |")
+
+    # Rubric scores
+    rubric_scores = result.get("rubric_scores") or {}
+    for key, display_name in RUBRIC_DIMENSIONS:
+        score = rubric_scores.get(key)
+        if score is not None:
+            lines.append(f"| {display_name} | {score}/10 |")
+        else:
+            lines.append(f"| {display_name} | N/A |")
+
+    lines.append("")
+
+    # Blocking issues section
+    raw_issues = result.get("blocking_issues")
+    blocking_issues = raw_issues if isinstance(raw_issues, list) else []
+    lines.append("### Blocking Issues")
+    if blocking_issues:
+        for issue in blocking_issues:
+            if not isinstance(issue, dict):
+                lines.append(f"- **UNKNOWN**: {issue}")
+                continue
+            severity = str(issue.get("severity") or "unknown")
+            description = issue.get("description") or "No description"
+            location = issue.get("location")
+            loc_str = f" ({location})" if location else ""
+            lines.append(f"- **{severity.upper()}**: {description}{loc_str}")
+    else:
+        lines.append("None")
+
+    lines.append("")
+
+    # ADR-040: Timeout and partial result indicators
+    timeout_fired = result.get("timeout_fired", False)
+    partial = result.get("partial", False)
+    completed_stages = result.get("completed_stages")
+
+    if timeout_fired:
+        lines.append(f"**Timeout**: Global deadline exceeded")
+    if partial and completed_stages is not None:
+        stages_str = ", ".join(completed_stages) if completed_stages else "none"
+        lines.append(f"**Completed Stages**: {stages_str}")
+    if timeout_fired or partial:
+        lines.append("")
+
+    # #704: name what was reviewed. A verdict line alone cannot show that the
+    # council reviewed nothing, which is how an empty-subject gate passed three
+    # PRs unnoticed. With the files listed, a reader of the CI step summary
+    # can see the subject the verdict is about.
+    coverage = result.get("coverage")
+    lines.extend(_coverage_lines(coverage if isinstance(coverage, dict) else {}))
+    lines.extend(_discovery_lines(result))
+
+    # Transcript location
+    transcript = result.get("transcript_location")
+    if transcript:
+        lines.append(f"**Transcript**: {transcript}")
+    lines.append("")
+
+    # Rationale (summarized)
+    rationale = result.get("rationale") or "No rationale provided."
+    lines.append("### Rationale")
+    # Take first 3 sentences or 500 chars, whichever is shorter
+    sentences = rationale.split(". ")
+    summary = ". ".join(sentences[:3])
+    if len(summary) > 500:
+        summary = summary[:497] + "..."
+    elif len(sentences) > 3:
+        summary += "..."
+    lines.append(summary)
+
+    return "\n".join(lines)
+
+
+def format_verification_result_compact(result: Dict[str, Any]) -> str:
+    """
+    Format verification result in compact single-line format.
+
+    Useful for CI/CD logs where minimal output is preferred.
+
+    Args:
+        result: Verification result dictionary
+
+    Returns:
+        Single-line formatted string
+    """
+    verification_id = result.get("verification_id", "unknown")
+    # #704: a run the council never made is not a verdict, in one line either.
+    error = result.get("error")
+    if error:
+        banner = _NOT_RUN_BANNERS.get(error if isinstance(error, str) else "", ("DID NOT RUN", ""))[0]
+        return f"🚫 {banner} (council did not run) [{verification_id}]"
+
+    raw_verdict = (result.get("verdict") or "unclear").lower()
+    verdict = raw_verdict.upper()
+    emoji = VERDICT_EMOJIS.get(raw_verdict, "❓")
+    confidence = result.get("confidence") or 0.0
+    exit_code = result.get("exit_code")
+    if exit_code is None:
+        exit_code = 2
+
+    # ADR-040: Append timeout/partial indicators for observability
+    suffix = ""
+    if result.get("timeout_fired"):
+        suffix += " TIMEOUT"
+    if result.get("partial"):
+        stages = result.get("completed_stages", [])
+        suffix += f" partial=[{','.join(stages)}]" if stages else " partial"
+
+    return f"{emoji} {verdict} (confidence={confidence:.2f}, exit={exit_code}) [{verification_id}]{suffix}"

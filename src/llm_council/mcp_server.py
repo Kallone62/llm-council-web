@@ -1,0 +1,1052 @@
+"""LLM Council MCP Server - consult multiple LLMs and get synthesized guidance.
+
+Implements ADR-012: MCP Server Reliability and Long-Running Operation Handling
+- Progress notifications during council execution
+- Health check tool
+- Confidence levels (quick/balanced/high/reasoning)
+- Structured results with per-model status
+- Tiered timeouts with fallback synthesis
+- Partial results on timeout
+- Tier-Sovereign timeout configuration (2025-12-19)
+"""
+
+import json
+import time
+import asyncio
+from typing import Any, Dict, List, Optional
+
+from mcp.server.fastmcp import FastMCP, Context
+
+from llm_council.council import (
+    run_council_with_fallback,
+    TIMEOUT_SYNTHESIS_TRIGGER,
+)
+from llm_council.verdict import VerdictType
+from llm_council.verification.api import (
+    BlockingEvidenceTooLarge,
+    SnapshotResolutionError,
+    VerifyRequest,
+    run_verification,
+)
+from llm_council.verification.context import InvalidSnapshotError
+from llm_council.verification.formatting import format_verification_result
+from llm_council.verification.transcript import (
+    create_transcript_store,
+    TranscriptNotFoundError,
+    TranscriptIntegrityError,
+)
+
+# ADR-032: Migrated to unified_config
+from llm_council.unified_config import (
+    get_config,
+    get_api_key,
+    get_key_source as _config_get_key_source,
+)
+from llm_council.tier_contract import create_tier_contract
+from llm_council.openrouter import query_model_with_status, STATUS_OK
+from llm_council.gateway.base import DEFAULT_HEALTH_CHECK_MODEL
+
+
+def _get_council_models() -> list:
+    """Get council models from unified config."""
+    return get_config().council.models
+
+
+def _get_chairman_model() -> str:
+    """The default tier's chairman, or the configured one (#725)."""
+    from .chairman import resolve_chairman
+
+    return resolve_chairman()
+
+
+def _get_openrouter_api_key() -> str:
+    """Get OpenRouter API key via ADR-013 resolution chain."""
+    return get_api_key("openrouter") or ""
+
+
+def _get_tier_model_pools() -> dict:
+    """Get tier model pools from unified config."""
+    config = get_config()
+    return config.tiers.pools
+
+
+def _get_tier_timeout(tier: str) -> dict:
+    """Get tier timeout config from unified config."""
+    config = get_config()
+    timeouts = config.timeouts
+    return {
+        "total": timeouts.get_timeout(tier, "total") // 1000,  # Convert ms to seconds
+        "per_model": timeouts.get_timeout(tier, "per_model") // 1000,
+    }
+
+
+def _get_key_source() -> str:
+    """Report where the OpenRouter API key was resolved from (ADR-013).
+
+    Delegates to unified_config's source tracking, which distinguishes
+    "environment", "keychain", "config_file", etc. — instead of only
+    detecting the env var and otherwise reporting "unknown". Re-resolving
+    here makes the reported source deterministic for the OpenRouter key
+    regardless of intervening resolutions for other providers.
+    """
+    get_api_key("openrouter")
+    return _config_get_key_source()
+
+
+# Module-level function for backwards compatibility with tests
+def get_key_source() -> str:
+    """Public function wrapper for backwards compatibility."""
+    return _get_key_source()
+
+
+# Module-level aliases for backwards compatibility.
+#
+# #609: these were computed once at import, so a key or pool configured
+# afterwards — a keychain re-auth, `llm-council setup-key`, an env change in a
+# long-lived server process — never reached them, and the health check
+# reported a frozen snapshot. Resolved lazily instead (PEP 562), so the public
+# names stay available and are never stale.
+#
+# `unittest.mock.patch` still works on them: it setattr()s a real module
+# attribute, which shadows this hook, then delattr()s on exit to restore lazy
+# resolution. Verified, and pinned by tests.
+_LAZY_ALIASES = {
+    "COUNCIL_MODELS": lambda: _get_council_models(),
+    "CHAIRMAN_MODEL": lambda: _get_chairman_model(),
+    "OPENROUTER_API_KEY": lambda: _get_openrouter_api_key(),
+    "TIER_MODEL_POOLS": lambda: _get_tier_model_pools(),
+}
+
+
+def __getattr__(name: str):
+    """Resolve the back-compat config aliases on access rather than at import.
+
+    CAVEAT: ``from llm_council.mcp_server import OPENROUTER_API_KEY`` evaluates
+    this hook once, at the *importing* module's import time, and binds the
+    result there — re-freezing the value in that namespace. Import the module
+    and read the attribute (``mcp_server.OPENROUTER_API_KEY``) to keep lazy
+    resolution. Audited: no production consumer uses the from-import form.
+    """
+    resolver = _LAZY_ALIASES.get(name)
+    if resolver is not None:
+        return resolver()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    """Include the lazily-resolved aliases in introspection (PEP 562)."""
+    return sorted(set(globals()) | set(_LAZY_ALIASES))
+
+
+mcp = FastMCP("LLM Council")
+
+
+def _build_confidence_configs() -> dict:
+    """
+    Build confidence configs dynamically from tier timeout settings.
+
+    This allows environment variable overrides per ADR-012 Section 5.
+    """
+    return {
+        "quick": {
+            "models": 2,
+            **_get_tier_timeout("quick"),
+            "description": "Fast response (~20-30s)",
+        },
+        "balanced": {
+            "models": 3,
+            **_get_tier_timeout("balanced"),
+            "description": "Balanced response (~45-60s)",
+        },
+        "high": {
+            "models": None,
+            **_get_tier_timeout("high"),
+            "description": "Full council deliberation (~90s)",
+        },
+        "reasoning": {
+            "models": None,
+            **_get_tier_timeout("reasoning"),
+            "description": "Deep reasoning models (~3-5min)",
+        },
+    }
+
+
+# Build configs at import time (can be refreshed if needed)
+# #609 (round-2 review): this reads tier timeouts from live config, so
+# assigning it at import froze them exactly like the aliases above.
+_LAZY_ALIASES["CONFIDENCE_CONFIGS"] = lambda: _build_confidence_configs()
+
+
+@mcp.tool()
+async def consult_council(
+    query: str,
+    confidence: str = "high",
+    include_details: bool = False,
+    verdict_type: str = "synthesis",
+    include_dissent: bool = False,
+    evidence: Optional[List[Dict[str, Any]]] = None,
+    on_partial: str = "synthesise",
+    ctx: Optional[Context] = None,
+) -> str:
+    """
+    Consult the LLM Council for guidance on a query.
+
+    Progress semantics (ADR-046 P3): while deliberating, the tool emits MCP
+    progress notifications — per-model "Stage 1: <model> responded", per-
+    reviewer "Stage 2: <model> reviewed (n/N)", then synthesis progress.
+    Clients that render progress (Claude Code, Cursor) show these live;
+    clients that ignore progress lose nothing (the notifications are
+    best-effort and never affect the result).
+
+    Args:
+        query: The question to ask the council.
+        confidence: Tier for model selection and timeout budgets. One of:
+            - "quick"     - 2 fast models, ~30s server budget (per-model 20s)
+            - "balanced"  - 3 models, ~90s server budget (per-model 45s)
+            - "high"      - full council, ~180s server budget (per-model 90s) [default]
+            - "reasoning" - full council using slow reasoning models, ~600s server budget (per-model 300s)
+            Unknown values silently fall back to "high".
+            Note: "high" and "reasoning" can exceed typical MCP client transport
+            timeouts (Claude Code default ~60s). Set MCP_TIMEOUT (milliseconds)
+            in your client config to at least the tier's server budget when
+            using these tiers — otherwise the client will cut the connection
+            before the council finishes deliberating.
+        include_details: If True, includes individual model responses, rankings,
+            and the full per-model/per-stage Cost & Tokens breakdown. When False
+            (default) only a one-line cost/token summary is returned. Leave it
+            False unless the user explicitly wants the detail — the breakdown is
+            verbose and consumes context; do not echo it to the user unprompted.
+        verdict_type: Type of verdict to render (ADR-025b Jury Mode):
+            - "synthesis": Default behavior, unstructured natural language synthesis
+            - "binary": Go/no-go decision (approved/rejected) with confidence score
+            - "tie_breaker": Chairman resolves deadlocked decisions
+        include_dissent: If True, extract minority opinions from Stage 2 evaluations (ADR-025b).
+        evidence: #619 (ADR-042) — caller-supplied grounding context. List of
+            dicts with keys: source (required), content (required), format
+            (markdown|json|text, default markdown), evidence_id (optional),
+            strength. Rendered into the query for the whole council under the
+            same per-tier budget as verify's evidence (quick=1.5K,
+            balanced=6K, high/reasoning=10K chars; whole items dropped, never
+            truncated). NOTE: consult has no gate, so strength="blocking" is
+            DOWNGRADED to informational with an explicit warning — use
+            verify() for gate semantics.
+        on_partial: What to do when the council does not complete — fewer
+            models than requested, or no peer review (#660). One of:
+            - "synthesise" (default): answer anyway, with the shortfall
+              declared in the heading and above the content. Today's behaviour.
+            - "error": return a structured `council_incomplete` blob INSTEAD of
+              an answer. For callers who asked for a full council and would
+              rather retry than act on a partial one — note that the models
+              which time out are the slowest, hence generally the strongest,
+              so a short council is skewed rather than merely smaller.
+            - "return_raw": return the surviving members' responses attributed
+              individually, with no chairman synthesis over the top.
+            An unrecognised value is REJECTED with an `invalid_on_partial`
+            error rather than silently falling back — a caller who typos this
+            while intending strictness must not silently get permissiveness.
+        ctx: MCP context for progress reporting (injected automatically).
+
+    Returns:
+        Formatted string containing the council's synthesis, rankings, and quality metrics (ADR-036).
+        Quality metrics include:
+        - Consensus Strength Score (CSS): Agreement among council members (0.0-1.0)
+        - Deliberation Depth Index (DDI): Thoroughness of deliberation (0.0-1.0)
+        - Synthesis Attribution Score (SAS): How well synthesis is grounded in sources
+    """
+    # #660: validate on_partial BEFORE spending anything. Unlike `confidence`,
+    # which silently falls back to "high", an unrecognised value here is an
+    # error: the whole point of the argument is strictness, and silently
+    # downgrading a caller's strictness request is the failure this fixes.
+    from .consult_render import ON_PARTIAL_MODES
+
+    if on_partial not in ON_PARTIAL_MODES:
+        return json.dumps(
+            {
+                "error": "invalid_on_partial",
+                "detail": f"unrecognised on_partial value {on_partial!r}",
+                "allowed": list(ON_PARTIAL_MODES),
+                "hint": (
+                    "on_partial controls what happens when the council does not "
+                    "complete; it is not silently defaulted because a typo would "
+                    "turn a strictness request into permissiveness."
+                ),
+            },
+            indent=2,
+        )
+
+    # Parse verdict_type string to enum
+    try:
+        verdict_type_enum = VerdictType(verdict_type.lower())
+    except ValueError:
+        verdict_type_enum = VerdictType.SYNTHESIS
+    # Get confidence configuration (ADR-012 Section 5: Tier-Sovereign Timeouts)
+    # Resolved live; a module global here would be the import-time snapshot.
+    confidence_configs = _build_confidence_configs()
+    config = confidence_configs.get(confidence, confidence_configs["high"])
+    total_timeout = config.get("total", TIMEOUT_SYNTHESIS_TRIGGER)
+    per_model_timeout = config.get("per_model", 90)  # Default to high tier
+
+    # Create TierContract for tier-appropriate model selection (ADR-022)
+    # #609: resolve live — a module global would be the import-time snapshot.
+    tier = confidence if confidence in _get_tier_model_pools() else "high"
+    tier_contract = create_tier_contract(tier)
+
+    # #619 (ADR-042): caller-supplied evidence — validate, budget, render into
+    # the query at the entry surface (orchestrators untouched; no evidence ⇒
+    # query byte-identical).
+    evidence_prep = None
+    effective_query = query
+    if evidence:
+        from pydantic import ValidationError
+
+        from llm_council.consult_evidence import prepare_consult_evidence
+
+        try:
+            evidence_prep = prepare_consult_evidence(evidence, tier)
+        except ValidationError as e:
+            return json.dumps(
+                {
+                    "error": "invalid_evidence",
+                    "detail": str(e),
+                    "hint": (
+                        "each evidence item needs source (tool@version charset) "
+                        "and content; see the evidence argument docs"
+                    ),
+                },
+                indent=2,
+            )
+        if evidence_prep:
+            effective_query = query + evidence_prep["section"]
+
+    # Progress reporting helper that bridges MCP context to council callback
+    async def on_progress(step: int, total: int, message: str):
+        if ctx:
+            try:
+                await ctx.report_progress(step, total, message)
+            except Exception:
+                pass  # Progress reporting is best-effort
+
+    # Run the council with ADR-012, ADR-022, and ADR-025b features:
+    # - Tier-sovereign timeouts (per-tier total and per-model)
+    # - Tier-appropriate model selection (ADR-022)
+    # - Partial results on timeout
+    # - Fallback synthesis
+    # - Per-model status tracking
+    # - Jury Mode verdict types (ADR-025b)
+    council_result = await run_council_with_fallback(
+        effective_query,
+        on_progress=on_progress,
+        synthesis_deadline=total_timeout,
+        per_model_timeout=per_model_timeout,
+        tier_contract=tier_contract,
+        verdict_type=verdict_type_enum,
+        include_dissent=include_dissent,
+    )
+
+    # Extract results from ADR-012 structured response
+    synthesis = council_result.get("synthesis", "No response from council.")
+    metadata = council_result.get("metadata", {})
+    model_responses = council_result.get("model_responses", {})
+
+    # #660: heading reflects what actually happened, and the degradation notice
+    # sits ABOVE the content it qualifies. This used to be a constant
+    # "### Chairman's Synthesis" with the "N of M models" disclosure appended
+    # underneath, so a single surviving member's raw response was presented with
+    # the authority of a completed council.
+    from .consult_render import (
+        incomplete_error,
+        is_partial,
+        peer_review_ran,
+        render_consult_body,
+        render_raw_responses,
+        status_block,
+    )
+
+    # #660: the caller's declared policy for an incomplete council, applied
+    # before any answer is rendered.
+    if is_partial(metadata):
+        if on_partial == "error":
+            return json.dumps(incomplete_error(metadata, model_responses), indent=2)
+        if on_partial == "return_raw":
+            return (
+                render_raw_responses(metadata, model_responses)
+                + "\n### Council Status\n"
+                + status_block(metadata, model_responses)
+                + "\n"
+            )
+
+    result = render_consult_body(metadata, model_responses, synthesis)
+
+    tier_used = metadata.get("tier")
+    if metadata.get("status") == "complete" and tier_used:
+        result += f"\n*Tier: {tier_used}*\n"
+
+    # #619 (ADR-042): surface what happened to caller-supplied evidence.
+    if evidence_prep:
+        m = evidence_prep["metrics"]
+        result += (
+            f"\n*Evidence: {m['evidence_items_kept']}/{m['evidence_items_requested']} "
+            f"item(s) rendered ({m['evidence_chars_rendered']} chars)*\n"
+        )
+        downgraded = [r["evidence_id"] for r in evidence_prep["summary"] if r["downgraded"]]
+        if downgraded:
+            result += (
+                f"> **Note**: 'blocking' evidence downgraded to informational for "
+                f"consult ({', '.join(downgraded)}) — consult has no gate; use "
+                f"verify() for gate semantics.\n"
+            )
+        dropped = [r["evidence_id"] for r in evidence_prep["summary"] if r["status"] != "rendered"]
+        if dropped:
+            result += (
+                f"> **Note**: dropped over the {tier}-tier evidence budget "
+                f"({', '.join(dropped)}) — whole items are dropped, never truncated.\n"
+            )
+
+    # ADR-025b: Add verdict result for BINARY/TIE_BREAKER modes
+    verdict = metadata.get("verdict")
+    if verdict:
+        result += "\n### Verdict\n"
+        result += f"**Decision**: {verdict.get('verdict', 'unknown').upper()}\n"
+        result += f"**Confidence**: {verdict.get('confidence', 0):.0%}\n"
+        result += f"**Rationale**: {verdict.get('rationale', 'No rationale provided')}\n"
+        if verdict.get("deadlocked"):
+            result += f"\n> *Note: Council was deadlocked. Chairman cast deciding vote.*\n"
+        if verdict.get("dissent"):
+            result += f"\n**Dissent**: {verdict.get('dissent')}\n"
+
+    # #660 (F4): council.py stores dissent under metadata["dissent"] for
+    # SYNTHESIS mode, but the only rendering here was the ADR-025b verdict block
+    # above — which exists solely for binary/tie_breaker. So in the DEFAULT
+    # verdict_type, include_dissent=true ran the extraction and threw the result
+    # away. Absence is now explained rather than left to look like agreement.
+    if include_dissent and not (verdict and verdict.get("dissent")):
+        dissent_text = metadata.get("dissent")
+        if dissent_text:
+            result += f"\n### Dissent\n{dissent_text}\n"
+        elif not peer_review_ran(metadata):
+            result += (
+                "\n### Dissent\n*None extracted: peer review did not run, so there "
+                "are no reviewer evaluations to draw a minority opinion from.*\n"
+            )
+        else:
+            result += (
+                "\n### Dissent\n*None extracted: no reviewer scored a response far "
+                "enough from the median to register as a minority opinion.*\n"
+            )
+
+    # Add council rankings if available
+    aggregate = metadata.get("aggregate_rankings", [])
+    if aggregate:
+        result += "\n### Council Rankings\n"
+        for entry in aggregate[:5]:  # Top 5
+            score = entry.get("borda_score", "N/A")
+            result += f"- {entry['model']}: {score}\n"
+
+    # ADR-036: Add quality metrics if available
+    quality_metrics = metadata.get("quality_metrics")
+    if quality_metrics:
+        result += "\n### Quality Metrics\n"
+        core = quality_metrics.get("core", {})
+
+        # Consensus Strength Score
+        css = core.get("consensus_strength", 0.0)
+        css_bar = "█" * int(css * 10) + "░" * (10 - int(css * 10))
+        result += f"- **Consensus Strength**: {css:.2f} [{css_bar}]\n"
+
+        # Deliberation Depth Index
+        ddi = core.get("deliberation_depth", 0.0)
+        ddi_bar = "█" * int(ddi * 10) + "░" * (10 - int(ddi * 10))
+        result += f"- **Deliberation Depth**: {ddi:.2f} [{ddi_bar}]\n"
+
+        # Synthesis Attribution Score
+        sas = core.get("synthesis_attribution", {})
+        if sas:
+            grounded = "✓" if sas.get("grounded", False) else "✗"
+            result += f"- **Synthesis Grounded**: {grounded} (alignment: {sas.get('max_source_alignment', 0):.2f})\n"
+            if sas.get("hallucination_risk", 0) > 0.3:
+                result += f"  - ⚠️ Hallucination risk: {sas.get('hallucination_risk', 0):.2f}\n"
+
+        # Quality alerts
+        alerts = quality_metrics.get("quality_alerts", [])
+        if alerts:
+            result += f"\n**Alerts**: {', '.join(alerts)}\n"
+
+    # ADR-011: cost/token summary. One dense line by default; full per-model /
+    # per-stage breakdown only under include_details (progressive disclosure).
+    from .cost_summary import format_cost_summary
+
+    usage_summary = format_cost_summary(
+        metadata.get("usage"), include_details=include_details
+    )
+    if usage_summary:
+        result += "\n### Cost & Tokens\n" + usage_summary + "\n"
+
+    if include_details:
+        result += "\n\n### Council Details\n"
+
+        # Add per-model status (ADR-012)
+        result += "\n#### Model Status\n"
+        for model, info in model_responses.items():
+            model_short = model.split("/")[-1]
+            status_icon = "✓" if info.get("status") == "ok" else "✗"
+            latency = info.get("latency_ms", 0)
+            result += (
+                f"- {status_icon} {model_short}: {info.get('status', 'unknown')} ({latency}ms)\n"
+            )
+
+        # Add Stage 1 details (Individual Responses) - only successful ones
+        result += "\n#### Stage 1: Individual Opinions\n"
+        for model, info in model_responses.items():
+            if info.get("status") == "ok" and info.get("response"):
+                result += f"\n**{model}**:\n{info['response']}\n"
+
+        # Add Stage 2 details (Rankings) if available
+        label_to_model = metadata.get("label_to_model", {})
+        if label_to_model:
+            result += "\n#### Stage 2: Peer Review\n"
+            result += f"*Label mappings: {json.dumps(label_to_model)}*\n"
+
+    # #660 (F1c): machine-readable outcome, emitted unconditionally so a caller
+    # can branch on `status`/`peer_review` without parsing the prose above. A
+    # block that appeared only on degradation would itself need detecting.
+    result += "\n### Council Status\n" + status_block(metadata, model_responses) + "\n"
+
+    return result
+
+
+def _external_telemetry_status() -> Dict[str, Any]:
+    """ADR-056 D8: whether council spend is being reported externally.
+
+    Soft-fail: a broken telemetry module must not fail a health check whose job
+    is to tell an operator what is working.
+    """
+    try:
+        from llm_council.observability.external_spend import telemetry_status
+
+        return telemetry_status()
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"enabled": False, "reason": "unavailable", "detail": type(exc).__name__}
+
+
+def _estimated_durations(council_size: int) -> dict:
+    """Per-tier duration estimates taken from the tier's own timeout budget.
+
+    A council run is bounded by its tier's total budget, so that number — not a
+    hand-written range that drifts from the config beside it — is the honest
+    thing to quote. Reads through `_get_tier_timeout`, so environment overrides
+    (ADR-012 Section 5) are reflected rather than contradicted.
+    """
+    notes = {
+        "quick": "fastest models",
+        "balanced": "most models",
+        "high": f"all {council_size} models",
+        "reasoning": "extended thinking; raise MCP_TIMEOUT",
+    }
+    estimates = {}
+    for tier_name, note in notes.items():
+        try:
+            budget = int(_get_tier_timeout(tier_name)["total"])
+        except Exception:
+            # A health check that throws is strictly worse than one that admits
+            # it could not read a budget.
+            estimates[tier_name] = f"unknown ({note})"
+            continue
+        estimates[tier_name] = f"up to {budget}s server budget ({note})"
+    return estimates
+
+
+@mcp.tool()
+async def council_health_check(deep: bool = True, tier: str = "high") -> str:
+    """
+    Check LLM Council health before expensive operations (ADR-012).
+
+    Returns status of API connectivity, the models a real run would use, and
+    estimated response time. Use this to verify the council is working before
+    calling consult_council.
+
+    Args:
+        deep: Probe the configured chairman model as well as general API
+            connectivity. **Default changed to True in #660.** #596 added this
+            flag but left it off, so the default check still did not exercise
+            the component its own docstring calls the single point of failure —
+            and `ready: true` went on being a green light that did not predict
+            the outcome. There is no way to make `ready` chairman-conditional
+            without a chairman call, so the honest default is to make it.
+            Pass `deep=False` for the old cheap-ping behaviour; `ready_scope`
+            in the response says which you got. Skipped automatically when
+            general connectivity has already failed — a chairman probe cannot
+            add information then, and billing for one during an outage is the
+            wrong move.
+    """
+    from importlib.metadata import version as pkg_version
+
+    try:
+        council_version = pkg_version("llm-council-core")
+    except Exception:
+        council_version = "unknown"
+
+    # #591 Bug 2: report what a real run would actually use.
+    #
+    # `consult_council` always builds a TierContract and runs
+    # `tier_contract.allowed_models`; it never consults the flat
+    # `council.models` list. Reporting the flat list (previously via the
+    # import-time COUNCIL_MODELS constant) meant the health check could name a
+    # completely different council than the one that runs, with no signal — and
+    # being import-time-bound, it also never reflected a config reload.
+    # Mirror consult_council's own resolution, including its fallback for an
+    # unrecognised value, so the reported tier is the one that would run.
+    default_tier = tier if tier in _get_tier_model_pools() else "high"
+
+    config_warnings = []
+    tier_error = None
+
+    # These lookups can themselves raise on a malformed config. A health check
+    # that throws is strictly worse than one reporting not-ready, so degrade
+    # into the same structured answer rather than propagating.
+    try:
+        configured_models = list(_get_council_models())
+        chairman_model = _get_chairman_model()
+        # #609: resolved live. Read from the module global this was a frozen
+        # import-time snapshot, so a key configured afterwards stayed invisible.
+        api_key = _get_openrouter_api_key()
+        # Also re-resolves the key underneath, so it belongs inside the
+        # same guard rather than able to bypass the not-ready path.
+        key_source = get_key_source()
+    except Exception as e:
+        config_error = f"{type(e).__name__}: {e}"
+        return json.dumps(
+            {
+                "version": council_version,
+                "ready": False,
+                "message": f"Configuration could not be loaded ({config_error}).",
+                "config_warnings": [
+                    f"Reading council configuration failed ({config_error}); "
+                    "consult_council would fail on this configuration."
+                ],
+            },
+            indent=2,
+        )
+
+    try:
+        effective_models = list(create_tier_contract(default_tier).allowed_models)
+    except Exception as e:
+        # Do NOT silently fall back. consult_council has no such fallback, so
+        # a config that breaks tier resolution breaks a real run — reporting
+        # ready:true here would recreate exactly the misrepresentation this
+        # function was just fixed to avoid (council review of #608).
+        tier_error = f"{type(e).__name__}: {e}"
+        effective_models = []
+        config_warnings.append(
+            f"Tier '{default_tier}' could not be resolved ({tier_error}). "
+            "consult_council resolves the same contract with no fallback, so a "
+            "real run would fail."
+        )
+
+    if tier_error is None and sorted(configured_models) != sorted(effective_models):
+        config_warnings.append(
+            "council.models and the resolved tier pool disagree: a real "
+            f"consult_council run at the '{default_tier}' tier uses "
+            f"{effective_models}, not {configured_models}. Set "
+            f"tiers.pools.{default_tier}.models to match, or rely on the tier pool."
+        )
+
+    # Heterogeneous by design (strings, bools, nested dicts) and mutated below,
+    # so annotate rather than let mypy infer a union from the literal — the
+    # inferred type made `checks["chairman_connectivity"]["error"] = ...` an
+    # error, and adding a key would silently change which error it reported.
+    checks: Dict[str, Any] = {
+        "version": council_version,
+        # #660 (F5): what `ready` below is actually a statement about. Sits
+        # beside `ready` rather than nested inside api_connectivity, because a
+        # caveat a caller has to go looking for is not a caveat. Starts narrow
+        # and is widened ONLY once a chairman probe has actually run — deriving
+        # it from the `deep` argument would claim a probe that a dead lite
+        # probe, or a raising one, skipped.
+        "ready_scope": "connectivity_only",
+        "api_key_configured": bool(api_key),
+        "key_source": key_source,  # ADR-013: where the key came from, never the key
+        "default_tier": default_tier,
+        "council_size": len(effective_models),
+        "chairman_model": chairman_model,
+        "models": effective_models,
+        # #660 (F6): derived from each tier's CONFIGURED budget, not prose. The
+        # hard-coded strings said "~60-90 seconds" for high while the same repo
+        # configures tiers.pools.high.timeout_seconds: 180 — an estimate under
+        # half its own budget, which trains callers to ignore estimates.
+        "estimated_duration": _estimated_durations(len(effective_models)),
+        # ADR-056 D8: a no-op emit path when the [otel] extra is absent is
+        # right; SILENCE is not. Without this, a council reporting nothing
+        # externally is indistinguishable from a council that spent nothing —
+        # which is the confusion #692 exists to end, one layer down.
+        "external_telemetry": _external_telemetry_status(),
+    }
+
+    if config_warnings:
+        checks["configured_council_models"] = configured_models
+        checks["config_warnings"] = config_warnings
+
+    # Quick connectivity test with a fast, cheap model
+    if checks["api_key_configured"]:
+        try:
+            start = time.time()
+            response = await query_model_with_status(
+                DEFAULT_HEALTH_CHECK_MODEL,  # Fast, cheap, GA probe model
+                [{"role": "user", "content": "ping"}],
+                timeout=10.0,
+            )
+            latency_ms = int((time.time() - start) * 1000)
+
+            checks["api_connectivity"] = {
+                "status": response["status"],
+                "latency_ms": latency_ms,
+                "test_model": DEFAULT_HEALTH_CHECK_MODEL,
+                # #596: say what this probe does and does not cover. It pings a
+                # cheap lite model, so it answers "is the API reachable", not
+                # "will the council complete" — during a chairman outage those
+                # diverge, and this reported ready:true for an hour while every
+                # real run failed.
+                "probe_scope": "connectivity_only",
+                "caveat": (
+                    "This probe covers a lite model only; it does not exercise the "
+                    "chairman or the council models. See the top-level ready_scope "
+                    "for whether the chairman was probed separately."
+                ),
+            }
+
+            if response["status"] == STATUS_OK:
+                # Connectivity is necessary but not sufficient: a council with
+                # no resolvable models cannot deliberate however healthy the
+                # API is (council review of #608).
+                if tier_error is not None:
+                    checks["ready"] = False
+                    checks["message"] = (
+                        f"Tier '{default_tier}' could not be resolved ({tier_error}). "
+                        "consult_council would fail on this configuration."
+                    )
+                elif not effective_models:
+                    checks["ready"] = False
+                    checks["message"] = (
+                        f"Tier '{default_tier}' resolved to no models, so the council "
+                        "has nothing to deliberate with. Configure "
+                        f"tiers.pools.{default_tier}.models or council.models."
+                    )
+                else:
+                    checks["ready"] = True
+                    # #660 (F5): `ready` is read as a go/no-go gate before an
+                    # expensive run. The deep block below can still set it back
+                    # to False on an unreachable chairman — which is the point
+                    # of probing by default.
+                    checks["message"] = (
+                        "Council is ready. Use consult_council to ask questions."
+                        if deep
+                        else (
+                            "API is reachable and the tier resolves to models. This does "
+                            "NOT probe the chairman, whose stage-3 synthesis is the single "
+                            "point of failure that turns an otherwise-successful run into "
+                            "a verdict-less one — omit deep=false to include it."
+                        )
+                    )
+            else:
+                checks["ready"] = False
+                checks["message"] = (
+                    f"API connectivity issue: {response.get('error', 'Unknown error')}"
+                )
+
+            # #596/#660: probe the model that actually performs synthesis.
+            # Skipped when connectivity already failed — the chairman probe
+            # cannot add information then, and it would bill a second failing
+            # call during an outage.
+            if deep and response["status"] == STATUS_OK:
+                try:
+                    chair_start = time.time()
+                    chair_response = await query_model_with_status(
+                        chairman_model,
+                        [{"role": "user", "content": "ping"}],
+                        timeout=30.0,
+                    )
+                    chair_latency = int((time.time() - chair_start) * 1000)
+                    # The probe completed, so `ready` is now a statement about
+                    # the chairman too. Widened here and nowhere else.
+                    checks["ready_scope"] = "chairman_probed"
+                    checks["chairman_connectivity"] = {
+                        "status": chair_response["status"],
+                        "latency_ms": chair_latency,
+                        "model": chairman_model,
+                    }
+                    if chair_response["status"] != STATUS_OK:
+                        detail = chair_response.get("error") or "no detail returned"
+                        checks["chairman_connectivity"]["error"] = detail
+                        checks["ready"] = False
+                        checks["message"] = (
+                            f"Chairman model {chairman_model} is not answering "
+                            f"({chair_response['status']}: {detail}). Stage-3 synthesis "
+                            "would fail, so the council cannot produce a verdict."
+                        )
+                except Exception as e:
+                    checks["chairman_connectivity"] = {
+                        "status": "error",
+                        "model": chairman_model,
+                        "error": f"{type(e).__name__}: {e}",
+                    }
+                    checks["ready"] = False
+                    checks["message"] = f"Chairman probe failed: {type(e).__name__}: {e}"
+
+        except Exception as e:
+            checks["api_connectivity"] = {
+                "status": "error",
+                "error": str(e),
+            }
+            checks["ready"] = False
+            checks["message"] = f"Health check failed: {e}"
+    else:
+        checks["ready"] = False
+        checks["message"] = "OPENROUTER_API_KEY not configured. Set it in environment or .env file."
+
+    return json.dumps(checks, indent=2)
+
+
+@mcp.tool()
+async def verify(
+    snapshot_id: str,
+    target_paths: Optional[List[str]] = None,
+    rubric_focus: Optional[str] = None,
+    confidence_threshold: float = 0.7,
+    tier: str = "balanced",
+    evidence: Optional[List[Dict[str, Any]]] = None,
+    ctx: Optional[Context] = None,
+) -> str:
+    """
+    Verify agent work using the LLM Council verification system (ADR-034).
+
+    Uses multi-model consensus to verify code changes, implementations, or other
+    work artifacts against quality rubrics. Returns a structured verdict with
+    confidence score and rationale.
+
+    Progress semantics (ADR-046 P3): emits MCP progress notifications through
+    the verification stages (evidence expansion, council collection, ranking,
+    verdict) — best-effort, never affects the verdict.
+
+    UNCLEAR (ADR-047 P1): `unclear_reason` is infra_failure (chairman call
+    errored: check billing/auth, then RETRY; not a review), low_confidence
+    (below threshold: accept-and-audit if no blocking issues), or timeout.
+    Exit code stays 2. If time ran out, `retry_hint` names a HIGHER tier
+    (#597): never retry a starved run at the same or a lower tier.
+
+    Args:
+        snapshot_id: Git commit SHA to verify (7-40 hex characters).
+        target_paths: Optional list of specific file paths to verify.
+        rubric_focus: Optional rubric focus area (e.g., "security", "performance").
+        confidence_threshold: Minimum confidence for pass verdict (0.0-1.0, default 0.7).
+        tier: Confidence tier for model selection - "quick", "balanced" (default), "high", or "reasoning".
+        evidence: ADR-042 — pre-computed analysis from upstream tools. List of
+            dicts with keys: source (required), content (required), strength
+            (informational|blocking, default informational), format
+            (markdown|json|text, default markdown), evidence_id (optional).
+            Up to 20 items; per-tier budget applies (quick=1.5K, balanced=6K,
+            high/reasoning=10K chars). A blocking item exceeding budget
+            returns a structured error blob (not a verdict).
+        ctx: MCP context for progress reporting (injected automatically).
+
+    Returns:
+        JSON string containing verification result with verdict, confidence,
+        exit_code (0=PASS, 1=FAIL, 2=UNCLEAR), rubric scores, blocking issues,
+        rationale, and transcript location for audit trail. When evidence is
+        provided, the response also includes evidence_summary (per-source
+        dispositions) and evidence_warnings (structured warnings).
+        input_metrics carries ADR-049 cache telemetry: cached_tokens (reads),
+        cache_write_tokens, and cache_session_id — grouping persisted results
+        by cache_session_id reconstructs the prompt-cache hit rate per subject
+        from .council/logs alone (zero reads across rounds = broken prefix or
+        lapsed TTL).
+    """
+
+    # Progress reporting bridge: MCP context <-> run_verification callback
+    async def on_progress(step: int, total: int, message: str):
+        if ctx:
+            try:
+                await ctx.report_progress(step, total, message)
+            except Exception:
+                pass  # Progress reporting is best-effort
+
+    try:
+        # Create request object and transcript store.
+        # Pydantic validates evidence dicts → List[EvidenceItem] for us.
+        request = VerifyRequest(
+            snapshot_id=snapshot_id,
+            target_paths=target_paths,
+            rubric_focus=rubric_focus,
+            confidence_threshold=confidence_threshold,
+            tier=tier,
+            evidence=evidence,
+        )
+        store = create_transcript_store()
+
+        # Run the verification with progress callback
+        result = await run_verification(request, store, on_progress=on_progress if ctx else None)
+
+        # Return formatted output for human readability
+        # JSON is also included at the end for programmatic parsing
+        formatted = format_verification_result(result)
+        json_output = json.dumps(result, indent=2)
+
+        return f"{formatted}\n\n---\n\n<details>\n<summary>Raw JSON</summary>\n\n```json\n{json_output}\n```\n</details>"
+
+    except BlockingEvidenceTooLarge as e:
+        # ADR-042: oversized blocking evidence — fail closed with structured error.
+        # Mirrors the HTTP 422 body shape from verify_endpoint for parity.
+        return json.dumps(
+            {
+                "error": "blocking_evidence_too_large",
+                "message": str(e),
+                "evidence_index": e.index,
+                "source": e.source,
+                "chars": e.chars,
+                "budget": e.budget,
+                "tier": tier,
+                "exit_code": 2,
+                "verdict": "unclear",
+                "confidence": 0.0,
+            },
+            indent=2,
+        )
+
+    except SnapshotResolutionError as e:
+        # Issue #340: target_paths unresolvable at snapshot_id — surface as
+        # a structured error blob (parallel to BlockingEvidenceTooLarge) so
+        # the caller sees "verification could not read your code" rather
+        # than a soft UNCLEAR verdict that skill rules say to ignore.
+        return json.dumps(
+            {
+                "error": "snapshot_resolution_failed",
+                "message": str(e),
+                "snapshot_id": e.snapshot_id,
+                # #581: the repository the daemon searched. This is the MCP
+                # surface, where the mis-rooted-daemon case actually bites —
+                # a client rooted in one repo driving work in a sibling.
+                "repo_root": getattr(e, "repo_root", None),
+                "unresolved_paths": e.unresolved_paths,
+                "expansion_warnings": e.expansion_warnings,
+                "exit_code": 2,
+                "verdict": "unclear",
+                "confidence": 0.0,
+            },
+            indent=2,
+        )
+
+    except InvalidSnapshotError as e:
+        return json.dumps(
+            {
+                "error": str(e),
+                "exit_code": 2,  # UNCLEAR for invalid input
+                "verdict": "unclear",
+                "confidence": 0.0,
+            },
+            indent=2,
+        )
+
+    except Exception as e:
+        return json.dumps(
+            {
+                "error": f"Unexpected error: {e}",
+                "exit_code": 2,  # UNCLEAR for unexpected errors
+                "verdict": "unclear",
+                "confidence": 0.0,
+            },
+            indent=2,
+        )
+
+
+@mcp.tool()
+async def audit(
+    verification_id: Optional[str] = None,
+    validate_integrity: bool = False,
+    expected_hash: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> str:
+    """
+    Retrieve and validate verification audit transcripts (ADR-034).
+
+    Provides access to verification audit trails for compliance, debugging,
+    and integrity validation. Can retrieve a single verification by ID or
+    list all verifications.
+
+    Args:
+        verification_id: Optional ID to retrieve specific verification.
+            If not provided, lists all available verifications.
+        validate_integrity: If True, validates transcript integrity against
+            expected_hash.
+        expected_hash: Expected SHA256 hash for integrity validation.
+            Required when validate_integrity is True.
+        ctx: MCP context (injected automatically).
+
+    Returns:
+        JSON string containing:
+        - For single verification: stages, integrity_hash, optional validation result
+        - For listing: verifications array with metadata, total_count
+    """
+    try:
+        store = create_transcript_store(readonly=True)
+
+        # If no verification_id, list all verifications
+        if verification_id is None:
+            verifications = store.list_verifications()
+            return json.dumps(
+                {
+                    "verifications": verifications,
+                    "total_count": len(verifications),
+                },
+                indent=2,
+            )
+
+        # Retrieve specific verification
+        stages = store.read_all_stages(verification_id)
+        integrity_hash = store.compute_integrity_hash(verification_id)
+
+        result: dict = {
+            "verification_id": verification_id,
+            "stages": stages,
+            "integrity_hash": integrity_hash,
+        }
+
+        # Validate integrity if requested
+        if validate_integrity and expected_hash:
+            try:
+                store.validate_integrity(verification_id, expected_hash)
+                result["integrity_valid"] = True
+            except TranscriptIntegrityError as e:
+                result["integrity_valid"] = False
+                result["integrity_error"] = str(e)
+
+        return json.dumps(result, indent=2)
+
+    except TranscriptNotFoundError as e:
+        return json.dumps(
+            {
+                "error": f"Verification not found: {e}",
+                "verification_id": verification_id,
+            },
+            indent=2,
+        )
+
+    except Exception as e:
+        return json.dumps(
+            {
+                "error": f"Unexpected error: {e}",
+                "verification_id": verification_id,
+            },
+            indent=2,
+        )
+
+
+def main():
+    """Entry point for the llm-council command."""
+    # ADR-045 P1: feature-detected Tasks exposure — no-op on SDKs < 2.x
+    # (sync tools stay byte-identical); activates after the stable-v2 pin bump.
+    from .mcp_tasks import maybe_expose_tasks
+
+    maybe_expose_tasks(mcp)
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

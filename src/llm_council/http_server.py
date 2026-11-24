@@ -1,0 +1,399 @@
+"""Minimal HTTP server for LLM Council (ADR-009).
+
+This module provides a stateless, single-tenant HTTP server for local development
+and third-party integrations (LangChain, Vercel AI SDK).
+
+Design principles (per ADR-009):
+- Stateless: No database, no persistent storage
+- Single-tenant: No multi-user auth (optional basic token only)
+- BYOK: API keys passed in request or read from environment
+- Ephemeral: Logs go to stdout
+
+Usage:
+    pip install "llm-council-core[http]"
+    llm-council serve
+
+Or programmatically:
+    from llm_council.http_server import app
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+"""
+
+import hmac
+import os
+from typing import Any, Dict, List, Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
+
+from llm_council.council import run_full_council
+from llm_council.unified_config import (
+    set_request_api_key,
+    clear_request_api_keys,
+    get_api_key,
+)
+
+
+# Security scheme for Bearer token authentication (ADR-038)
+security = HTTPBearer(auto_error=False)
+
+
+def get_api_token() -> Optional[str]:
+    """Get the configured API token from environment.
+
+    Returns None if no token is configured, meaning auth is optional.
+    """
+    token = os.environ.get("LLM_COUNCIL_API_TOKEN")
+    # Treat empty string as not configured
+    return token if token else None
+
+
+async def verify_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+) -> None:
+    """Verify the Bearer token if LLM_COUNCIL_API_TOKEN is configured.
+
+    ADR-038 Security Requirement:
+    - If LLM_COUNCIL_API_TOKEN is set, all protected endpoints require auth
+    - If not set, auth is optional (backwards compatible)
+    - Health endpoint bypasses this check entirely
+
+    Raises:
+        HTTPException: 401 if token is required but missing/invalid
+    """
+    api_token = get_api_token()
+
+    # No token configured = auth not required (backwards compatible)
+    if api_token is None:
+        return
+
+    # Token configured = auth required
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API token. Provide Authorization: Bearer <token>",
+        )
+
+    # #656: constant-time, like webhooks/hmac_auth.py. `!=` stops at the first
+    # differing byte, which is the textbook timing side channel. Compared as
+    # UTF-8 bytes, because compare_digest raises TypeError on a non-ASCII str.
+    if not hmac.compare_digest(
+        credentials.credentials.encode("utf-8"), api_token.encode("utf-8")
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API token. Provide Authorization: Bearer <token>",
+        )
+
+
+# Dependency for protected endpoints
+auth_dependency = Depends(verify_token)
+from llm_council.webhooks.sse import council_event_generator, get_sse_headers
+from llm_council.webhooks.types import WebhookConfig
+from llm_council.verdict import VerdictType
+from llm_council.consult_evidence import prepare_consult_evidence
+from llm_council.tier_contract import create_tier_contract
+from llm_council.verification.schemas import EvidenceItem
+
+# FastAPI app instance
+from llm_council import __version__ as _package_version
+
+app = FastAPI(
+    title="LLM Council",
+    description=(
+        "Multi-LLM deliberation over HTTP: 3-stage council runs "
+        "(POST /v1/council/run), live SSE streaming with per-model events and "
+        "opt-in chairman token streaming (GET /v1/council/stream), and MCP "
+        "Server Card discovery. Stateless, single-tenant, BYOK (ADR-009): "
+        "keys come from the request or server environment."
+    ),
+    version=_package_version,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    openapi_tags=[
+        {"name": "Council", "description": "Run and stream 3-stage deliberations"},
+        {"name": "Health", "description": "Liveness for load balancers"},
+        {"name": "Discovery", "description": "MCP Server Card (ADR-045 / SEP-2127)"},
+    ],
+)
+
+
+class CouncilRequest(BaseModel):
+    """Request body for council deliberation."""
+
+    prompt: str = Field(..., description="The question to deliberate")
+    models: Optional[List[str]] = Field(
+        default=None, description="Optional list of models (uses defaults if omitted)"
+    )
+    api_key: Optional[str] = Field(
+        default=None, description="OpenRouter API key (or set OPENROUTER_API_KEY env)"
+    )
+    # Webhook configuration (ADR-025a Issue #76)
+    webhook_url: Optional[str] = Field(
+        default=None, description="URL to receive webhook notifications"
+    )
+    webhook_events: Optional[List[str]] = Field(
+        default=None,
+        description="Events to subscribe to (default: council.complete, council.error)",
+    )
+    webhook_secret: Optional[str] = Field(
+        default=None, description="HMAC secret for webhook signature verification"
+    )
+    # ADR-025b Jury Mode
+    verdict_type: Optional[str] = Field(
+        default="synthesis",
+        description="Type of verdict: 'synthesis' (default), 'binary' (approved/rejected), or 'tie_breaker'",
+    )
+    include_dissent: Optional[bool] = Field(
+        default=False, description="Extract minority opinions from Stage 2 evaluations (ADR-025b)"
+    )
+    # #619 (ADR-042): caller-supplied grounding context
+    evidence: Optional[List[EvidenceItem]] = Field(
+        default=None,
+        description=(
+            "Caller-supplied grounding context (#619, ADR-042): items with "
+            "source (tool@version charset), content, optional format/"
+            "evidence_id/strength. Rendered into the prompt for the whole "
+            "council under the high-tier evidence budget (10K chars; whole "
+            "items dropped, never truncated). strength='blocking' is "
+            "downgraded to informational with an explicit warning — this "
+            "endpoint has no gate; use /verify for gate semantics. "
+            "Dispositions returned under metadata.evidence."
+        ),
+    )
+
+
+class UsageSummary(BaseModel):
+    """ADR-011 cost/token accounting for a council run.
+
+    ``total`` and each ``by_stage`` / ``by_model`` entry carry
+    ``prompt_tokens``, ``completion_tokens``, ``total_tokens``, ``cost_usd``
+    (USD; 0 when no provider cost was reported), and ``cached_tokens``.
+    """
+
+    by_stage: Dict[str, Any] = Field(default_factory=dict, description="Usage per stage")
+    by_model: Dict[str, Any] = Field(
+        default_factory=dict, description="Usage per model (reviewer-primary attribution)"
+    )
+    total: Dict[str, Any] = Field(default_factory=dict, description="Grand total across stages")
+
+
+class CouncilResponse(BaseModel):
+    """Response from council deliberation."""
+
+    stage1: List[Dict[str, Any]] = Field(..., description="Individual model responses")
+    stage2: List[Dict[str, Any]] = Field(..., description="Peer review rankings")
+    stage3: Dict[str, Any] = Field(..., description="Final synthesis")
+    metadata: Dict[str, Any] = Field(..., description="Aggregate rankings and config")
+    usage: Optional[UsageSummary] = Field(
+        None, description="ADR-011 cost/token accounting (also present under metadata.usage)"
+    )
+
+
+class HealthResponse(BaseModel):
+    """Health check response."""
+
+    status: str
+    service: str
+
+
+@app.get("/health", response_model=HealthResponse, tags=["Health"])
+async def health() -> HealthResponse:
+    """Health check endpoint.
+
+    Returns service status for load balancers and monitoring.
+    """
+    return HealthResponse(status="ok", service="llm-council-local")
+
+
+@app.get("/.well-known/mcp/server-card.json", tags=["Discovery"])
+@app.get("/server-card", tags=["Discovery"])
+async def server_card() -> dict:
+    """MCP Server Card (ADR-045 P2, SEP-2127).
+
+    Public discovery metadata generated from the live tool registry — served
+    at both the experimental-extension path (/server-card) and the SEP-1649
+    well-known path. Unauthenticated by design (like /health): it describes
+    the server and exposes no session data.
+    """
+    from .server_card import build_server_card
+
+    return build_server_card()
+
+
+@app.post(
+    "/v1/council/run",
+    response_model=CouncilResponse,
+    tags=["Council"],
+    dependencies=[auth_dependency],
+)
+async def council_run(request: CouncilRequest) -> CouncilResponse:
+    """Run the full council deliberation.
+
+    Executes the 3-stage council process:
+    1. Stage 1: Collect individual model responses
+    2. Stage 2: Peer review and ranking
+    3. Stage 3: Chairman synthesis
+
+    API key can be provided in the request body or via OPENROUTER_API_KEY
+    environment variable.
+    """
+    # BYOK: Use provided key or fall back to environment (via unified config)
+    api_key = request.api_key or get_api_key("openrouter")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="API key required. Pass 'api_key' in request or set OPENROUTER_API_KEY environment variable.",
+        )
+
+    # Set request-scoped API key (async-safe, no race condition)
+    # This uses ContextVar which is automatically scoped to the current async context
+    if request.api_key:
+        set_request_api_key("openrouter", request.api_key)
+
+    # Build webhook config if URL provided (ADR-025a Issue #76)
+    webhook_config = None
+    if request.webhook_url:
+        webhook_config = WebhookConfig(
+            url=request.webhook_url,
+            events=request.webhook_events or ["council.complete", "council.error"],
+            secret=request.webhook_secret,
+        )
+
+    # Parse verdict_type (ADR-025b)
+    try:
+        verdict_type_enum = VerdictType(
+            request.verdict_type.lower() if request.verdict_type else "synthesis"
+        )
+    except ValueError:
+        verdict_type_enum = VerdictType.SYNTHESIS
+
+    # #619 (ADR-042): caller-supplied evidence — already schema-validated by
+    # FastAPI (typed field ⇒ 422 on bad items); budget + render at the entry
+    # surface. This endpoint has no confidence tiers, so the budget uses the
+    # high tier (the full council this endpoint runs). No evidence ⇒ the
+    # prompt is byte-identical.
+    evidence_prep = None
+    effective_prompt = request.prompt
+    if request.evidence:
+        evidence_prep = prepare_consult_evidence(
+            [e.model_dump() for e in request.evidence], "high"
+        )
+        if evidence_prep:
+            effective_prompt = request.prompt + evidence_prep["section"]
+
+    try:
+        # #648: this endpoint has no confidence tier, but it runs the full
+        # council — the same high tier the evidence budget above already
+        # assumes. Sourcing the Stage 2/3 budgets from that contract is what
+        # makes LLM_COUNCIL_TIMEOUT_MULTIPLIER reach this path; at multiplier
+        # 1.0 the high tier's 90s per-model budget sits under the 120s floor,
+        # so the effective budget is unchanged.
+        # Resolved per request, inside the try, deliberately: a module-level
+        # constant would freeze the import-time config (cf. #609), and a
+        # construction failure belongs on the endpoint's error path, not as an
+        # unhandled 500 (#650 gate).
+        high_tier_per_model = create_tier_contract("high").per_model_timeout_ms / 1000
+
+        # Run the full council deliberation
+        stage1, stage2, stage3, metadata = await run_full_council(
+            effective_prompt,
+            models=request.models,
+            per_model_timeout=high_tier_per_model,
+            webhook_config=webhook_config,
+            verdict_type=verdict_type_enum,
+            include_dissent=request.include_dissent or False,
+        )
+
+        if evidence_prep:
+            metadata = {
+                **metadata,
+                "evidence": {
+                    "summary": evidence_prep["summary"],
+                    "warnings": evidence_prep["warnings"],
+                    "metrics": evidence_prep["metrics"],
+                },
+            }
+
+        return CouncilResponse(
+            stage1=stage1,
+            stage2=stage2,
+            stage3=stage3,
+            metadata=metadata,
+            usage=metadata.get("usage"),  # ADR-011: typed, OpenAPI-documented
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Council deliberation failed: {e}",
+        )
+    finally:
+        # Clear request-scoped API keys (cleanup for this async context)
+        clear_request_api_keys()
+
+
+@app.get("/v1/council/stream", tags=["Council"], dependencies=[auth_dependency])
+async def council_stream(
+    prompt: str = Query(..., description="The question to deliberate"),
+    models: Optional[str] = Query(
+        default=None, description="Comma-separated list of models (uses defaults if omitted)"
+    ),
+    api_key: Optional[str] = Query(
+        default=None, description="OpenRouter API key (or set OPENROUTER_API_KEY env)"
+    ),
+    stream_tokens: bool = Query(
+        default=False,
+        description="ADR-046 P2: also stream chairman synthesis tokens as synthesis.delta events",
+    ),
+) -> StreamingResponse:
+    """Stream council deliberation events via Server-Sent Events (SSE).
+
+    This endpoint streams real-time events as the council progresses
+    through its deliberation stages. Events are sent in SSE format.
+
+    **Event Types** (every event carries the ADR-046 v1 envelope:
+    `v`, `session_id`, `ts`, `seq`):
+    - `council.deliberation_start`: Council execution starting
+    - `stage1.response`: A model's stage-1 answer landed (model, response,
+      latency_ms, usage) — one per model, as each completes
+    - `council.stage1.complete`: Stage 1 responses collected
+    - `stage2.review`: A reviewer's ranking landed (reviewer, ranking,
+      parse_ok) — one per reviewer
+    - `consensus.early_termination`: ADR-044 early-consensus fired
+    - `council.stage2.complete`: Stage 2 rankings complete
+    - `stage3.start`: Chairman synthesis starting (chairman)
+    - `synthesis.delta`: Chairman tokens as generated (opt-in via
+      `stream_tokens=true`; text) — assembles to the same final result
+    - `council.complete`: Final synthesis ready (includes full result) — terminal
+    - `council.error`: An error occurred — terminal
+
+    **Example Client (JavaScript):**
+    ```javascript
+    const eventSource = new EventSource('/v1/council/stream?prompt=What+is+AI');
+    eventSource.addEventListener('council.complete', (e) => {
+        const data = JSON.parse(e.data);
+        console.log('Result:', data.result.synthesis);
+    });
+    ```
+
+    API key can be provided as a query parameter or via OPENROUTER_API_KEY
+    environment variable.
+    """
+    # BYOK: Use provided key or fall back to environment (via unified config)
+    effective_api_key = api_key or get_api_key("openrouter")
+    if not effective_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="API key required. Pass 'api_key' query param or set OPENROUTER_API_KEY environment variable.",
+        )
+
+    return StreamingResponse(
+        council_event_generator(prompt, models, effective_api_key, stream_tokens=stream_tokens),
+        media_type="text/event-stream",
+        headers=get_sse_headers(),
+    )

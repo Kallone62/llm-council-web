@@ -1,0 +1,818 @@
+"""ADR-018 Phase 1: Cross-session bias data persistence.
+
+This module provides JSONL-based storage for bias metric records,
+enabling cross-session aggregation for statistically meaningful bias detection.
+
+Key components:
+- BiasMetricRecord: Dataclass for individual bias measurements
+- ConsentLevel: Privacy consent levels aligned with ADR-001
+- JSONL append/read operations for efficient storage
+- Session-to-records conversion for council.py integration
+"""
+
+import hashlib
+import hmac
+import json
+import logging
+import math
+import os
+import secrets
+import stat
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone, timedelta
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# Import version from package
+try:
+    from llm_council import __version__
+except ImportError:
+    __version__ = "unknown"
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Configuration (loaded from unified_config - ADR-031)
+# =============================================================================
+
+from .bias_audit import derive_label_positions
+from .unified_config import get_config
+
+
+def _get_bias_persistence_enabled() -> bool:
+    """Get bias persistence enabled flag from unified config."""
+    try:
+        return get_config().evaluation.bias.persistence_enabled
+    except Exception:
+        return False
+
+
+def _get_bias_store_path() -> Path:
+    """Get bias store path from unified config."""
+    try:
+        path_str = get_config().evaluation.bias.store_path
+        return Path(path_str).expanduser()
+    except Exception:
+        return Path.home() / ".llm-council" / "bias_metrics.jsonl"
+
+
+def _get_bias_consent_level() -> int:
+    """Get bias consent level from unified config as integer."""
+    # #715 gate: a privacy control fails CLOSED. An unreadable config or an
+    # unrecognised value used to resolve to LOCAL_ONLY, i.e. to storing.
+    try:
+        consent_str = get_config().evaluation.bias.consent_level
+        consent_map = {"OFF": 0, "LOCAL_ONLY": 1, "ANONYMOUS": 2, "ENHANCED": 3, "RESEARCH": 4}
+        return consent_map.get(consent_str, 0)
+    except Exception:
+        return 0  # OFF
+
+
+def _hash_secret_path() -> Path:
+    """Where the per-install query-hash secret lives: beside the bias store,
+    unless ``LLM_COUNCIL_HASH_SECRET_FILE`` says otherwise (tests set it, so no
+    test writes into the operator's HOME, #693)."""
+    override = os.getenv("LLM_COUNCIL_HASH_SECRET_FILE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return _get_bias_store_path().parent / "hash_secret"
+
+
+def _resolve_hash_secret() -> Optional[str]:
+    """The HMAC key for query hashing, or None to skip hashing.
+
+    #614: this used to fall back to a PUBLISHED default when
+    ``LLM_COUNCIL_HASH_SECRET`` was unset. With a known key, anyone holding the
+    store can confirm a guessed query is in it, which is the dictionary attack
+    the HMAC exists to prevent. The fallback is now a random per-install
+    secret, created once with mode 0600 and reused, so grouping still works
+    across sessions. If it cannot be read or created, hashing is skipped: a
+    missing hash loses a grouping key, a known key loses the privacy.
+    """
+    configured = os.getenv("LLM_COUNCIL_HASH_SECRET", "").strip()
+    if configured:
+        if len(configured) < _MIN_KEY_LENGTH:
+            # A short key is enumerable, which defeats the point of the HMAC.
+            logger.warning(
+                "query hashing skipped: LLM_COUNCIL_HASH_SECRET is shorter than %d characters",
+                _MIN_KEY_LENGTH,
+            )
+            return None
+        return configured
+    path = _hash_secret_path()
+    existing = _read_private_secret(path)
+    if existing is _UNSAFE:
+        return None
+    if existing:
+        return existing
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if path.is_file() and not path.is_symlink():
+            # An empty file (a half-written create, a truncation): replace it
+            # rather than disabling hashing for good.
+            path.unlink()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        secret = secrets.token_hex(32)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(secret + "\n")
+        return secret
+    except FileExistsError:
+        # Another process created it between our read and our create.
+        again = _read_private_secret(path)
+        return again if isinstance(again, str) and again else None
+    except OSError as exc:
+        logger.warning("query hashing skipped: cannot create %s (%s)", path, type(exc).__name__)
+        return None
+
+
+#: The generated secret is 64 hex characters; a configured one must be at
+#: least this long.
+_MIN_KEY_LENGTH = 16
+
+_UNSAFE = object()
+
+
+def _read_private_secret(path: Path) -> Any:
+    """The secret in ``path``, "" if absent or empty, or ``_UNSAFE``.
+
+    #715 gate: the create path was careful (O_EXCL, 0600) but the read path
+    trusted whatever was there. A symlink, a non-regular file, a file owned by
+    someone else, or one others can write would let them choose the key, and
+    a chosen key re-enables exactly the dictionary attack #614 closed.
+
+    Round 2: one others can READ is as bad (they can confirm guesses), and a
+    persisted key is held to the same minimum length as a configured one. The
+    checks run on the descriptor actually read (``O_NOFOLLOW`` + ``fstat``),
+    not on a name that could be swapped between the check and the read. An
+    exposed key is refused, never silently replaced: the operator decides.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return _UNSAFE  # includes ELOOP: the path is a symlink
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_mode & 0o077
+            or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+        ):
+            logger.warning("query hashing skipped: %s is not a private (0600) regular file", path)
+            return _UNSAFE
+        with os.fdopen(fd, "r") as handle:
+            fd = -1
+            secret = handle.read().strip()
+    except OSError:
+        return _UNSAFE
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if secret and len(secret) < _MIN_KEY_LENGTH:
+        logger.warning(
+            "query hashing skipped: %s holds a key shorter than %d characters",
+            path,
+            _MIN_KEY_LENGTH,
+        )
+        return _UNSAFE
+    return secret
+
+
+# =============================================================================
+# ConsentLevel Enum
+# =============================================================================
+
+
+class ConsentLevel(Enum):
+    """ADR-018: Unified consent model aligned with council-cloud ADR-001.
+
+    Levels:
+        OFF (0): No telemetry or storage
+        LOCAL_ONLY (1): Local JSONL storage only
+        ANONYMOUS (2): + Cloud rankings transmission
+        ENHANCED (3): + Cloud bias summary transmission
+        RESEARCH (4): + Query hashes for similarity grouping
+    """
+
+    OFF = 0
+    LOCAL_ONLY = 1
+    ANONYMOUS = 2
+    ENHANCED = 3
+    RESEARCH = 4
+
+
+# =============================================================================
+# BiasMetricRecord Dataclass
+# =============================================================================
+
+
+@dataclass
+class BiasMetricRecord:
+    """Single bias metric record for JSONL storage.
+
+    One record per (session, model, reviewer) combination.
+    Schema versioned for future compatibility.
+
+    Attributes:
+        schema_version: Semver version string for schema compatibility
+        session_id: UUID identifying the council session
+        timestamp: ISO 8601 timestamp of the session
+        consent_level: Privacy consent level (0-4)
+        reviewer_id: Model that gave the score
+        model_id: Model being scored
+        position: Display position during peer review (0-indexed).
+            NOTE (#611): records at schema_version < 1.2.0 hold the reviewer's
+            RANKING index here instead. Any consumer treating this as display
+            order must gate on `position_is_display_order`.
+        response_length_chars: Character count of the response
+        score_value: Numeric score given by reviewer
+        score_scale: Scale description (e.g., "1-10")
+        council_config_version: Package version for model drift tracking
+        query_hash: Optional HMAC hash for query grouping (RESEARCH only)
+        query_metadata: Optional metadata about the query
+    """
+
+    schema_version: str = "1.2.0"
+    session_id: str = ""
+    timestamp: str = ""
+    consent_level: int = 1  # LOCAL_ONLY default
+    reviewer_id: str = ""
+    model_id: str = ""
+    position: int = 0
+    response_length_chars: int = 0
+    score_value: float = 0.0
+    score_scale: str = "1-10"
+    council_config_version: str = "0.1.0"
+    query_hash: Optional[str] = None
+    query_metadata: Optional[Dict[str, Any]] = None
+
+    @property
+    def position_is_display_order(self) -> bool:
+        """True if `position` means display order rather than ranking (#611).
+
+        Exposed on the record so a consumer cannot reasonably use `position`
+        without meeting the question. Filtering at the read layer was
+        considered and rejected: pre-1.2.0 records remain fully valid for
+        score, reviewer and response-length analysis, and dropping them there
+        would discard good data to protect one field.
+        """
+        try:
+            components = [int(x) for x in str(self.schema_version).split(".")[:3]]
+        except (TypeError, ValueError):
+            return False
+        # Pad: "1.2" must parse as (1, 2, 0), not (1, 2) — the latter compares
+        # LESS than (1, 2, 0) and would wrongly read as pre-fix (#613 review).
+        components += [0] * (3 - len(components))
+        return tuple(components) >= (1, 2, 0)
+
+    def to_jsonl_line(self) -> str:
+        """Serialize to single JSONL line.
+
+        Returns:
+            JSON string without newlines, suitable for JSONL append.
+        """
+        return json.dumps(asdict(self), default=str)
+
+    @classmethod
+    def from_jsonl_line(cls, line: str) -> "BiasMetricRecord":
+        """Deserialize from JSONL line.
+
+        Args:
+            line: JSON string representing a record
+
+        Returns:
+            BiasMetricRecord instance
+        """
+        data = json.loads(line)
+        # Handle potential missing fields from older schema versions
+        return cls(
+            schema_version=data.get("schema_version", "1.0.0"),
+            session_id=data.get("session_id", ""),
+            timestamp=data.get("timestamp", ""),
+            consent_level=data.get("consent_level", 1),
+            reviewer_id=data.get("reviewer_id", ""),
+            model_id=data.get("model_id", ""),
+            position=data.get("position", 0),
+            response_length_chars=data.get("response_length_chars", 0),
+            score_value=data.get("score_value", 0.0),
+            score_scale=data.get("score_scale", "1-10"),
+            council_config_version=data.get("council_config_version", ""),
+            query_hash=data.get("query_hash"),
+            query_metadata=data.get("query_metadata"),
+        )
+
+
+# =============================================================================
+# Query Hashing (Privacy)
+# =============================================================================
+
+
+def hash_query_if_enabled(
+    query: str,
+    consent_level: ConsentLevel,
+) -> Optional[str]:
+    """Generate HMAC hash for query grouping (opt-in only).
+
+    Only generates hash at RESEARCH consent level.
+    Keyed by LLM_COUNCIL_HASH_SECRET, else a random per-install secret
+    (#614). Returns None if no secret can be had.
+
+    Args:
+        query: The query text to hash
+        consent_level: Current consent level
+
+    Returns:
+        16-character hex hash if RESEARCH consent, None otherwise
+    """
+    if consent_level != ConsentLevel.RESEARCH:
+        return None
+
+    # Use first 100 chars to limit what's hashed
+    query_sample = query[:100]
+
+    # HMAC with deployment-specific secret
+    secret = _resolve_hash_secret()
+    if secret is None:
+        return None
+    hash_bytes = hmac.new(secret.encode(), query_sample.encode(), hashlib.sha256).hexdigest()
+
+    # Truncate to 16 chars
+    return hash_bytes[:16]
+
+
+# =============================================================================
+# JSONL Storage Operations
+# =============================================================================
+
+
+def append_bias_records(
+    records: List[BiasMetricRecord],
+    store_path: Optional[Path] = None,
+) -> int:
+    """Append records to JSONL store (atomic append).
+
+    Creates directory and file if needed.
+    Each record is written as a single line.
+
+    Args:
+        records: List of BiasMetricRecord to append
+        store_path: Path to JSONL file (default from config)
+
+    Returns:
+        Number of records written
+    """
+    if not records:
+        return 0
+
+    if store_path is None:
+        store_path = _get_bias_store_path()
+
+    # #715 gate: private, not umask-dependent. The store holds per-reviewer
+    # scores and query metadata; 0644 made it readable by every local user.
+    # Round 2: O_CREAT's mode applies only to a NEW file, so a store left 0644
+    # by an earlier version is tightened on the descriptor we opened (not by
+    # name), and a symlink is refused rather than written through. The
+    # directory is not chmod-ed: the default store sits in ./data, which is
+    # not ours to lock, and a 0600 file is private in any directory.
+    # Round 3: O_NONBLOCK so a planted FIFO fails the open (ENXIO) instead of
+    # hanging the run, and the descriptor must be a regular file we own; a
+    # foreign-owned file is refused, not fchmod-ed.
+    store_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = (
+        os.O_WRONLY
+        | os.O_APPEND
+        | os.O_CREAT
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    fd = os.open(store_path, flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or (
+            hasattr(os, "getuid") and info.st_uid != os.getuid()
+        ):
+            raise PermissionError(f"{store_path} is not a regular file owned by this user")
+        if stat.S_IMODE(info.st_mode) & 0o077 and hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+    except OSError:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "a") as f:
+        for record in records:
+            f.write(record.to_jsonl_line() + "\n")
+
+    return len(records)
+
+
+def read_bias_records(
+    store_path: Optional[Path] = None,
+    max_sessions: Optional[int] = None,
+    max_days: Optional[int] = None,
+    since: Optional[datetime] = None,
+) -> List[BiasMetricRecord]:
+    """Read records from JSONL store with optional filtering.
+
+    Applies rolling window based on parameters.
+    Returns records in chronological order (oldest first).
+
+    Args:
+        store_path: Path to JSONL file (default from config)
+        max_sessions: Limit to last N sessions
+        max_days: Limit to last N days
+        since: Only records after this datetime
+
+    Returns:
+        List of BiasMetricRecord in chronological order
+    """
+    if store_path is None:
+        store_path = _get_bias_store_path()
+
+    if not store_path.exists():
+        return []
+
+    records = []
+
+    with open(store_path, "r") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                record = BiasMetricRecord.from_jsonl_line(line)
+                records.append(record)
+            except (json.JSONDecodeError, KeyError, TypeError, AttributeError, ValueError) as e:
+                # AttributeError: a valid JSON line that is not an object
+                # (`3`, `[1]`, `null`) reached `.get` and crashed the reader.
+                logger.warning(f"Skipping malformed line {line_num}: {type(e).__name__}")
+                continue
+
+    # Filter by max_days
+    if max_days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_days)
+        records = [r for r in records if _parse_timestamp(r.timestamp) >= cutoff]
+
+    # Filter by since datetime
+    if since is not None:
+        records = [r for r in records if _parse_timestamp(r.timestamp) >= since]
+
+    # Sort chronologically (oldest first)
+    records.sort(key=lambda r: r.timestamp)
+
+    # Filter by max_sessions (keep last N sessions)
+    if max_sessions is not None:
+        # Get unique session IDs in chronological order
+        seen_sessions = []
+        for r in reversed(records):
+            if r.session_id not in seen_sessions:
+                seen_sessions.append(r.session_id)
+            if len(seen_sessions) >= max_sessions:
+                break
+
+        # Keep only records from these sessions
+        allowed_sessions = set(seen_sessions)
+        records = [r for r in records if r.session_id in allowed_sessions]
+
+    return records
+
+
+def _parse_timestamp(timestamp_str: str) -> datetime:
+    """Parse ISO 8601 timestamp string to datetime.
+
+    Handles various formats and returns epoch for invalid strings.
+    """
+    if not timestamp_str:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    try:
+        # Try standard ISO format
+        if timestamp_str.endswith("Z"):
+            timestamp_str = timestamp_str[:-1] + "+00:00"
+        return datetime.fromisoformat(timestamp_str)
+    except (ValueError, TypeError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def get_bias_store_stats(
+    store_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Get statistics about the bias store.
+
+    Args:
+        store_path: Path to JSONL file (default from config)
+
+    Returns:
+        Dictionary with stats: total_records, unique_sessions,
+        unique_reviewers, oldest_record, newest_record, file_size_bytes
+    """
+    if store_path is None:
+        store_path = _get_bias_store_path()
+
+    if not store_path.exists():
+        return {
+            "total_records": 0,
+            "unique_sessions": 0,
+            "unique_reviewers": 0,
+            "oldest_record": None,
+            "newest_record": None,
+            "file_size_bytes": 0,
+        }
+
+    records = read_bias_records(store_path)
+
+    if not records:
+        return {
+            "total_records": 0,
+            "unique_sessions": 0,
+            "unique_reviewers": 0,
+            "oldest_record": None,
+            "newest_record": None,
+            "file_size_bytes": store_path.stat().st_size,
+        }
+
+    session_ids = {r.session_id for r in records}
+    reviewer_ids = {r.reviewer_id for r in records}
+    timestamps = [r.timestamp for r in records if r.timestamp]
+
+    return {
+        "total_records": len(records),
+        "unique_sessions": len(session_ids),
+        "unique_reviewers": len(reviewer_ids),
+        "oldest_record": min(timestamps) if timestamps else None,
+        "newest_record": max(timestamps) if timestamps else None,
+        "file_size_bytes": store_path.stat().st_size,
+    }
+
+
+# =============================================================================
+# Session-to-Records Conversion
+# =============================================================================
+
+
+def _get_model_from_label_value(label_value: Any) -> str:
+    """Extract model string from label_to_model value.
+
+    Handles both enhanced format (dict with 'model' key) and legacy (string).
+    """
+    if isinstance(label_value, dict):
+        return label_value.get("model", "")
+    return str(label_value)
+
+
+def _extract_query_metadata(query: str) -> Dict[str, Any]:
+    """Extract metadata from the user query for bias analysis (ADR-018).
+
+    Extracts:
+    - category: Simple heuristic-based classification
+    - token_bucket: 'short' (<50 chars), 'medium' (<200), 'long' (>200)
+    - language: Defaults to 'en' (placeholder for future detection)
+
+    Args:
+        query: The user's query string (potentially sensitive)
+
+    Returns:
+        Dict with metadata fields
+    """
+    if not query:
+        return {"category": "unknown", "token_bucket": "unknown", "language": "en"}
+
+    # 1. Token bucket (using char length as proxy for speed/privacy)
+    length = len(query)
+    if length < 50:
+        bucket = "short"
+    elif length < 200:
+        bucket = "medium"
+    else:
+        bucket = "long"
+
+    # 2. Category heuristic
+    query_lower = query.lower()
+    category = "general"
+
+    code_keywords = ["def", "function", "class", "import", "python", "javascript"]
+    math_keywords = ["calculate", "compute", "equation", "math", "+", "="]
+    creative_keywords = ["write", "story", "poem", "creative", "imagine"]
+
+    if any(k in query_lower for k in code_keywords):
+        category = "coding"
+    elif any(k in query_lower for k in math_keywords):
+        category = "math_reasoning"
+    elif any(k in query_lower for k in creative_keywords):
+        category = "creative_writing"
+
+    return {"category": category, "token_bucket": bucket, "language": "en"}
+
+
+def _coerce_record_score(value: Any) -> float:
+    if isinstance(value, bool) or value is None:
+        return 0.0
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return result if math.isfinite(result) else 0.0
+
+
+def create_bias_records_from_session(
+    session_id: str,
+    stage1_results: List[Dict[str, Any]],
+    stage2_results: List[Dict[str, Any]],
+    label_to_model: Dict[str, Any],
+    query: Optional[str] = None,
+    consent_level: ConsentLevel = ConsentLevel.LOCAL_ONLY,
+) -> List[BiasMetricRecord]:
+    """
+    Create bias metric records from a council session.
+
+    Args:
+        session_id: Unique session identifier
+        stage1_results: List of model responses from Stage 1
+        stage2_results: List of rankings/reviews from Stage 2
+        label_to_model: Mapping of anonymous labels to model names
+        query: Original user query (optional, for metadata/hashing)
+        consent_level: User's privacy consent level
+
+    Returns:
+        List of BiasMetricRecord objects
+    """
+    records = []
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    # 1. Calculate query hash if consent allows (RESEARCH level)
+    query_hash = hash_query_if_enabled(query, consent_level) if query else None
+
+    # 2. Extract query metadata (safely, no PII)
+    query_metadata = _extract_query_metadata(query) if query else None
+
+    # Helper to get model name from label mapping
+    def get_model_from_label(lbl: str) -> str:
+        val = label_to_model.get(lbl)
+        if isinstance(val, dict):
+            return val.get("model", "")
+        return str(val) if val else ""
+
+    # #611: LABEL -> display index, from the same mapping the labels come from.
+    # Keyed by label, not model: one model can appear under two labels at two
+    # different positions, and keying by model collapses them (#613 review).
+    position_by_label = derive_label_positions(label_to_model)
+
+    # Precomputed once; this was an O(n^2) rescan of stage1_results per ranking.
+    # First-wins, matching the `break` in the loop this replaced — a dict
+    # comprehension would silently flip it to last-wins for duplicate models.
+    response_length_by_model: Dict[str, int] = {}
+    for _r in stage1_results:
+        response_length_by_model.setdefault(
+            _r.get("model", ""), len(_r.get("response", "") or "")
+        )
+
+    # Parse all rankings first
+    for ranking_result in stage2_results:
+        # One record per (reviewer, candidate) pair
+        reviewer_id = ranking_result.get("model", "")
+
+        parsed = ranking_result.get("parsed_ranking") or {}
+
+        # Determine score scale
+        score_scale = "1-10"
+
+        # Process explicit scores if available
+        scores = parsed.get("scores", {})
+        ranked_labels = parsed.get("ranking", [])
+
+        # Determine which labels to process (ranking list prefers order, but fallback to score keys)
+        labels_to_process = ranked_labels if ranked_labels else list(scores.keys())
+
+        for idx, label in enumerate(labels_to_process):
+            model_id = get_model_from_label(label)
+            if not model_id:
+                continue
+
+            # Get the score if available
+            # #715 gate: model output is untrusted; "N/A", NaN or an int
+            # beyond float range used to abort persistence for the session.
+            # A missing score is still recorded as 0.0 (pre-existing, #716).
+            score_value = _coerce_record_score(scores.get(label) if isinstance(scores, dict) else None)
+
+            # #611: DISPLAY position, not the reviewer's ranking index.
+            #
+            # This used to be `position = idx`, i.e. the index into
+            # `labels_to_process`, which is the reviewer's OUTPUT RANKING. The
+            # field is documented as "Display position during peer review", and
+            # bias_amplification.position_alignment correlates -position against
+            # consensus score to detect agreement that tracks DISPLAY order.
+            # Fed a ranking index instead, it correlated reviewers' rankings
+            # against a consensus derived from those same rankings — close to a
+            # restatement of agreement_index, and skewed toward false positives
+            # by the -position sign convention.
+            #
+            # derive_label_positions owns the parsing rather than re-deriving the
+            # label parsing a third time; it already handles the enhanced
+            # (display_index) and legacy (letter-order) formats, and owns the
+            # ADR-017 invariant that labels are assigned in presentation order.
+            # No fallback to `idx`: that IS the ranking index this fix removes,
+            # and reinstating it for unmapped labels would silently restore the
+            # bug for exactly the records we cannot verify (#613 review). A
+            # record whose display position is unknown is dropped instead.
+            if label not in position_by_label:
+                logger.warning(
+                    "No display position derivable for label %r (model %s) in "
+                    "session %s; dropping the bias record rather than recording "
+                    "a ranking index.",
+                    label,
+                    model_id,
+                    session_id,
+                )
+                continue
+            position = position_by_label[label]
+
+            # Find usage stats if available
+            # Note: We don't have per-candidate response length easily accessible here
+            # without looking back at stage1_results, but we can do a quick lookup
+            response_length = response_length_by_model.get(model_id, 0)
+
+            record = BiasMetricRecord(
+                schema_version="1.2.0",
+                session_id=session_id,
+                timestamp=timestamp,
+                consent_level=consent_level.value
+                if hasattr(consent_level, "value")
+                else int(consent_level),
+                reviewer_id=reviewer_id,
+                model_id=model_id,
+                position=position,
+                response_length_chars=response_length,
+                score_value=score_value,
+                score_scale=score_scale,
+                council_config_version="0.1.0",
+                query_hash=query_hash,
+                query_metadata=query_metadata,
+            )
+            records.append(record)
+
+    return records
+
+
+# =============================================================================
+# High-Level Integration
+# =============================================================================
+
+
+def persist_session_bias_data(
+    session_id: str,
+    stage1_results: List[Dict[str, Any]],
+    stage2_results: List[Dict[str, Any]],
+    label_to_model: Dict[str, Any],
+    query: Optional[str] = None,
+) -> int:
+    """High-level integration point for council.py.
+
+    Called after Stage 2 completes if bias persistence is enabled.
+    Respects consent_level from config.
+
+    Args:
+        session_id: UUID for the session
+        stage1_results: List of {model, response} from Stage 1
+        stage2_results: List of {model, parsed_ranking} from Stage 2
+        label_to_model: Mapping of labels to model info
+        query: Optional query text (for hashing at RESEARCH consent)
+
+    Returns:
+        Number of records persisted (0 if disabled)
+    """
+    if not _get_bias_persistence_enabled():
+        return 0
+
+    # Convert consent level int to enum
+    # #715 gate: OFF means "no telemetry or storage", and it used to be
+    # ignored here: only the persistence flag was checked, and ConsentLevel(0)
+    # is a valid member, so the ValueError fallback never fired. An invalid
+    # level fails closed too; it used to fall back to LOCAL_ONLY.
+    try:
+        consent = ConsentLevel(_get_bias_consent_level())
+    except ValueError:
+        return 0
+    if consent == ConsentLevel.OFF:
+        return 0
+
+    # Round 3: bias persistence is optional telemetry. A refused store (a
+    # symlink, a FIFO, someone else's file) or malformed stage-2 output must
+    # skip the write, never abort the run that produced the data. The type is
+    # logged, not the message, which can carry a path.
+    try:
+        records = create_bias_records_from_session(
+            session_id=session_id,
+            stage1_results=stage1_results,
+            stage2_results=stage2_results,
+            label_to_model=label_to_model,
+            query=query,
+            consent_level=consent,
+        )
+        # store_path comes from _get_bias_store_path() via append_bias_records
+        return append_bias_records(records)
+    except Exception as exc:
+        logger.warning("bias persistence skipped: %s", type(exc).__name__)
+        return 0
