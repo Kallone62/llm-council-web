@@ -58,6 +58,8 @@ def format_cost_summary(
         line += f" · ~{_fmt_cost(cost)}"
         if estimated > 0:
             line += f" (incl. ~{_fmt_cost(estimated)} estimated)"
+    if total.get("cost_incomplete"):
+        line += " (cost incomplete; known subtotal)" if cost_known else " · cost unknown"
     cached = total.get("cached_tokens", 0)
     if cached:
         line += f" · {_fmt_tokens(cached)} cached"
@@ -74,8 +76,11 @@ def format_cost_summary(
             mc = mu.get("cost_usd", 0.0) or 0.0
             # Use THIS row's own provenance (not the aggregate): show the figure
             # (incl. a genuine $0) only when this row's cost is known.
-            if bool(mu.get("cost_known", False)) or mc > 0:
+            model_cost_known = bool(mu.get("cost_known", False)) or mc > 0
+            if model_cost_known:
                 entry += f", {_fmt_cost(mc)}"
+            if mu.get("cost_incomplete"):
+                entry += " (cost incomplete; known subtotal)" if model_cost_known else ", cost unknown"
             lines.append(entry)
 
     by_stage = usage.get("by_stage") or {}
@@ -87,11 +92,13 @@ def format_cost_summary(
             stage_cost_known = bool(su.get("cost_known", False)) or sc > 0
             # Skip only truly empty rows — keep a row that carries cost metadata
             # even if its token count is zero.
-            if not tok and not stage_cost_known:
+            if not tok and not stage_cost_known and not su.get("cost_incomplete"):
                 continue
             entry = f"- {stage}: {_fmt_tokens(tok)} tok"
             if stage_cost_known:
                 entry += f", {_fmt_cost(sc)}"
+            if su.get("cost_incomplete"):
+                entry += " (cost incomplete; known subtotal)" if stage_cost_known else ", cost unknown"
             lines.append(entry)
 
     return "\n".join(lines)
