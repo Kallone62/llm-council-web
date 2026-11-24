@@ -1,12 +1,16 @@
 """JSON-based storage for conversations."""
 
 import json
+import logging
 import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from .config import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_data_dir():
@@ -38,10 +42,7 @@ def create_conversation(conversation_id: str) -> Dict[str, Any]:
         "messages": []
     }
 
-    # Save to file
-    path = get_conversation_path(conversation_id)
-    with open(path, 'w') as f:
-        json.dump(conversation, f, indent=2)
+    save_conversation(conversation)
 
     return conversation
 
@@ -61,7 +62,7 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     if not os.path.exists(path):
         return None
 
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 
@@ -74,9 +75,23 @@ def save_conversation(conversation: Dict[str, Any]):
     """
     ensure_data_dir()
 
-    path = get_conversation_path(conversation['id'])
-    with open(path, 'w') as f:
-        json.dump(conversation, f, indent=2)
+    path = Path(get_conversation_path(conversation['id']))
+    # Serialize beside the destination, then replace it only after a full write.
+    # Close the temporary file before replacing it (required on Windows).
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', dir=path.parent,
+            prefix=f'.{path.name}.', suffix='.tmp', delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(conversation, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def list_conversations() -> List[Dict[str, Any]]:
@@ -92,15 +107,25 @@ def list_conversations() -> List[Dict[str, Any]]:
     for filename in os.listdir(DATA_DIR):
         if filename.endswith('.json'):
             path = os.path.join(DATA_DIR, filename)
-            with open(path, 'r') as f:
-                data = json.load(f)
-                # Return metadata only
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if (
+                    not isinstance(data, dict)
+                    or data.get("id") != Path(filename).stem
+                    or not isinstance(data.get("created_at"), str)
+                    or not isinstance(data.get("messages"), list)
+                ):
+                    raise ValueError("Invalid conversation metadata")
                 conversations.append({
                     "id": data["id"],
                     "created_at": data["created_at"],
                     "title": data.get("title", "New Conversation"),
                     "message_count": len(data["messages"])
                 })
+            except (OSError, UnicodeError, ValueError) as exc:
+                # Keep the damaged file for recovery; never overwrite or delete it.
+                logger.warning("Skipping unreadable conversation %s (%s)", filename, type(exc).__name__)
 
     # Sort by creation time, newest first
     conversations.sort(key=lambda x: x["created_at"], reverse=True)
