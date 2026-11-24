@@ -462,6 +462,12 @@ async def _run_council_with_free_chairman_recovery(query: str, *, free_mode: boo
             }
             metadata = {**(metadata or {}), "status": "failed"}
             logger.warning("Council Stage 1 failed: zero usable model responses")
+        else:
+            # Also validate returned/cached results that bypass the live stage hook.
+            stage3 = engine_runtime.normalize_stage3_response(stage3)
+            if stage3.get("error_status") == "empty_synthesis":
+                metadata = {**(metadata or {}), "status": "failed"}
+                metadata.pop("verdict", None)
         return stage1, stage2, stage3, metadata
     finally:
         engine_runtime.unwatch_free_chairman_retry(token)
