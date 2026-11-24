@@ -8,6 +8,8 @@ $releaseBase = "https://github.com/Kallone62/llm-council-web/releases/download/$
 $target = Join-Path $env:LOCALAPPDATA 'Programs\LLMCouncilWeb'
 $temp = Join-Path $env:TEMP ('LLMCouncilWeb-install-' + [guid]::NewGuid().ToString('N'))
 $backup = $null
+$proc = $null
+$payloadMoved = $false
 
 try {
     if (-not $env:LOCALAPPDATA) {
@@ -39,8 +41,14 @@ try {
         throw 'Release ZIP does not contain LLMCouncilWeb.exe.'
     }
 
+    # Do not accept health responses from a previous running installation.
+    if (Get-NetTCPConnection -LocalPort 8001 -State Listen -ErrorAction SilentlyContinue) {
+        throw 'Close the running LLM Council instance (or other service on port 8001) before installing.'
+    }
+
     if (Test-Path $target) {
-        # Keep user secrets, custom council profile and complete message history.
+        # Preserve secrets, settings and history. The new EXE validates the
+        # staged YAML and migrates stale Free presets; the old install is backed up.
         foreach ($file in @('.env', 'llm_council.yaml')) {
             $oldFile = Join-Path $target $file
             if (Test-Path $oldFile) {
@@ -64,7 +72,41 @@ try {
 
     try {
         Move-Item -Path $payload -Destination $target
+        $payloadMoved = $true
         $exe = Join-Path $target 'LLMCouncilWeb.exe'
+
+        $oldValidation = $env:LLM_COUNCIL_VALIDATE_INSTALL
+        try {
+            $env:LLM_COUNCIL_VALIDATE_INSTALL = '1'
+            $proc = Start-Process -FilePath $exe -WorkingDirectory $target -PassThru
+        }
+        finally {
+            $env:LLM_COUNCIL_VALIDATE_INSTALL = $oldValidation
+        }
+        $ready = $false
+        $lastError = 'Application did not become ready'
+        for ($attempt = 0; $attempt -lt 40; $attempt++) {
+            $proc.Refresh()
+            if ($proc.HasExited) { throw "Application exited during startup ($($proc.ExitCode))" }
+            try {
+                $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8001/' -TimeoutSec 2
+                $settings = Invoke-RestMethod -Uri 'http://127.0.0.1:8001/api/settings' -TimeoutSec 2
+                $ui = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8001/app/' -TimeoutSec 2
+                if ($health.service -ne 'LLM Council API' -or "v$($health.version)" -ne $version) {
+                    throw 'Unexpected application or version on port 8001'
+                }
+                if ($settings.config_path -ne (Join-Path $target 'llm_council.yaml')) {
+                    throw 'Application loaded an unexpected configuration path'
+                }
+                if ($settings.configuration_valid -ne $true) { throw 'Effective council configuration is invalid' }
+                if ($ui.StatusCode -ne 200) { throw 'React UI is not ready' }
+                $ready = $true
+                break
+            }
+            catch { $lastError = $_.Exception.Message }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $ready) { throw "Application readiness check failed: $lastError" }
         $desktop = [Environment]::GetFolderPath('Desktop')
         if ($desktop) {
             $shortcutPath = Join-Path $desktop 'LLM Council Web.lnk'
@@ -79,13 +121,17 @@ try {
         if ($backup) {
             Write-Host "Previous installation backed up at $backup"
         }
-        Start-Process -FilePath $exe -WorkingDirectory $target
     }
     catch {
+        if ($proc) {
+            # PyInstaller onedir uses a single application process.
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            $null = $proc.WaitForExit(5000)
+        }
+        if ($payloadMoved -and (Test-Path $target)) {
+            Remove-Item -Path $target -Recurse -Force
+        }
         if ($backup -and (Test-Path $backup)) {
-            if (Test-Path $target) {
-                Remove-Item -Path $target -Recurse -Force
-            }
             Move-Item -Path $backup -Destination $target
         }
         throw

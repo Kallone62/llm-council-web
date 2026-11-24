@@ -18,9 +18,9 @@ function progressMessage(item) {
   const status = item.state === 'started' ? 'running'
     : item.state === 'completed' ? 'completed'
     : item.state;
-  const count = item.state === 'completed' || item.state === 'failed'
+  const count = ['completed', 'failed', 'partial'].includes(item.state)
     ? (item.responses != null ? ` · ${item.responses} responses`
-      : item.reviews != null ? ` · ${item.reviews} reviews` : '')
+      : item.reviews != null ? ` · ${item.reviews} reviews${item.valid_reviews != null ? ` (${item.valid_reviews} usable)` : ''}` : '')
     : '';
   const model = item.model ? ` · ${item.model}` : '';
   const elapsed = typeof item.elapsed_seconds === 'number' ? ` · ${item.elapsed_seconds}s` : '';
@@ -178,6 +178,8 @@ export default function ChatInterface({
                     <Stage3
                       finalResponse={msg.stage3}
                       verdict={msg.metadata?.verdict}
+                      status={msg.metadata?.status}
+                      warnings={msg.metadata?.ui_warnings || []}
                     />
                   )}
                 </div>

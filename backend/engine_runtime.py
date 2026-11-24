@@ -16,6 +16,7 @@ import llm_council.council as council
 from llm_council.quality.integration import calculate_quality_metrics
 
 from .free_profile import FREE_MODELS
+from .result_status import final_error, normalize_final, valid_review_count
 
 logger = logging.getLogger(__name__)
 
@@ -136,12 +137,19 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
         except BaseException:
             await emit_progress(stage, "failed")
             raise
+        if stage == "stage3":
+            result = (normalize_final(result[0]), result[1], None if final_error(result[0]) else result[2])
         details = {}
         if stage == "stage1" and isinstance(result, tuple):
             details["responses"] = len(result[0])
         elif stage == "stage2" and isinstance(result, tuple):
             details["reviews"] = len(result[0])
-        if stage == "stage1" and details.get("responses") == 0:
+            details["valid_reviews"] = valid_review_count(result[0])
+        if stage == "stage2" and details.get("valid_reviews") == 0:
+            await emit_progress(stage, "failed", **details)
+        elif stage == "stage2" and details["valid_reviews"] < details["reviews"]:
+            await emit_progress(stage, "partial", **details)
+        elif stage == "stage1" and details.get("responses") == 0:
             await emit_progress(stage, "failed", **details)
         elif stage == "stage3" and result[0].get("error_status"):
             await emit_progress(stage, "failed", error_status=result[0]["error_status"])
@@ -202,7 +210,7 @@ def repair_quality_metrics(stage1: list, stage2: list, stage3: dict, metadata: d
     """
     if not isinstance(metadata, dict) or "quality_metrics" not in metadata:
         return metadata
-    if stage3.get("error_status"):
+    if final_error(stage3):
         # Do not score a provider error as a successfully synthesized answer.
         return {**metadata, "quality_metrics": None}
     synthesis = stage3.get("response") if isinstance(stage3, dict) else None

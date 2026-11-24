@@ -29,9 +29,10 @@ from . import storage
 from .conversation_context import ContextSummaryError, prepare_council_query
 from .free_profile import (
     FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL,
-    is_free_document, is_free_profile, safe_local_title,
+    is_free_document, is_free_profile, safe_local_title, apply_free_preset,
 )
 from . import engine_runtime
+from .result_status import classify_round, normalize_final
 
 from llm_council.council import run_full_council
 from llm_council.council_stages import generate_conversation_title
@@ -165,21 +166,7 @@ def _free_run_guard() -> bool:
     if not is_free_document(document):
         return False
     cfg = get_config()
-    if (
-        not is_free_profile(cfg)
-        or cfg.council.style_normalization is not False
-        or cfg.council.chairman_disabled
-        or cfg.evaluation.rubric.enabled
-        or cfg.evaluation.bias.audit_enabled
-        or cfg.evaluation.safety.enabled
-        or cfg.gateways.default != "openrouter"
-        or cfg.gateways.fallback.enabled
-        or any(model in cfg.gateways.model_routing for model in FREE_MODELS)
-        or any(
-            model in cfg.gateways.model_name_map.get("openrouter", {})
-            for model in FREE_MODELS
-        )
-    ):
+    if not _free_configuration_valid(cfg):
         raise HTTPException(
             status_code=409,
             detail="Free profile has a conflicting engine or environment override. "
@@ -193,6 +180,24 @@ def _free_run_guard() -> bool:
                    "available free-tier requests.",
         )
     return True
+
+
+def _free_configuration_valid(cfg) -> bool:
+    return not (
+        not is_free_profile(cfg)
+        or cfg.council.style_normalization is not False
+        or cfg.council.chairman_disabled
+        or cfg.evaluation.rubric.enabled
+        or cfg.evaluation.bias.audit_enabled
+        or cfg.evaluation.safety.enabled
+        or cfg.gateways.default != "openrouter"
+        or cfg.gateways.fallback.enabled
+        or any(model in cfg.gateways.model_routing for model in FREE_MODELS)
+        or any(
+            model in cfg.gateways.model_name_map.get("openrouter", {})
+            for model in FREE_MODELS
+        )
+    )
 
 
 def _engine_version() -> str:
@@ -261,6 +266,7 @@ def _settings_payload() -> Dict[str, Any]:
         "cache_ttl_seconds": cfg.cache.ttl_seconds,
         "timeout_multiplier": cfg.timeouts.multiplier,
         "api_key_configured": _api_key_configured(),
+        "configuration_valid": profile != "free" or _free_configuration_valid(cfg),
         "config_path": str(app_config.get_council_config_path()),
         "environment_overrides": environment_overrides,
         "options": {
@@ -370,15 +376,7 @@ async def update_settings(request: SettingsUpdateRequest):
     timeouts["multiplier"] = request.timeout_multiplier
 
     if free:
-        gateways = sections.setdefault("gateways", {})
-        gateways["default"] = "openrouter"
-        gateways.setdefault("fallback", {})["enabled"] = False
-        # Never allow a free slug to be routed to another (possibly paid) API.
-        routing = gateways.setdefault("model_routing", {})
-        names = gateways.setdefault("model_name_map", {}).setdefault("openrouter", {})
-        for model in FREE_MODELS:
-            routing.pop(model, None)
-            names.pop(model, None)
+        apply_free_preset(sections, council_section)
     elif previously_free:
         # Restore Amiable's normal gateway failover when leaving our Free
         # safety sandbox; other engine profiles keep their native behavior.
@@ -462,6 +460,8 @@ async def _run_council_with_free_chairman_recovery(query: str, *, free_mode: boo
             }
             metadata = {**(metadata or {}), "status": "failed"}
             logger.warning("Council Stage 1 failed: zero usable model responses")
+        stage3 = normalize_final(stage3)
+        metadata = classify_round(stage1, stage2, stage3, metadata)
         return stage1, stage2, stage3, metadata
     finally:
         engine_runtime.unwatch_free_chairman_retry(token)
@@ -476,10 +476,19 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
 
     is_first_message = len(conversation["messages"]) == 0
     free_mode = _free_run_guard()
+    memory_state = None
+
+    async def memory_progress(state: str) -> None:
+        nonlocal memory_state
+        memory_state = state
+
     try:
         council_query, new_memory = await prepare_council_query(
             conversation, request.content,
+            progress_callback=memory_progress,
             summary_model=FREE_SUMMARY_MODEL if free_mode else None,
+            summary_alternatives=FREE_MODELS if free_mode else (),
+            allow_degraded_history=free_mode,
         )
     except ContextSummaryError as exc:
         raise HTTPException(
@@ -505,6 +514,10 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     )
 
     metadata = engine_runtime.repair_quality_metrics(stage1_results, stage2_results, stage3_result, metadata)
+    if memory_state == "degraded":
+        metadata.setdefault("ui_warnings", []).append("AI memory unavailable; only a truncated recent history excerpt was used.")
+        if metadata["status"] == "complete":
+            metadata["status"] = "partial"
 
     storage.add_assistant_message(
         conversation_id,
@@ -559,6 +572,8 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 council_query, new_memory = await prepare_council_query(
                     conversation, request.content, progress_callback=memory_progress,
                     summary_model=FREE_SUMMARY_MODEL if free_mode else None,
+                    summary_alternatives=FREE_MODELS if free_mode else (),
+                    allow_degraded_history=free_mode,
                 )
                 if new_memory is not None:
                     storage.update_conversation_memory(conversation_id, new_memory)
@@ -581,6 +596,10 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     per_model_timeout=_stage_timeout_seconds(),
                 )
                 metadata = engine_runtime.repair_quality_metrics(stage1, stage2, stage3, metadata)
+                if any(event["stage"] == "memory" and event["state"] == "degraded" for event in stage_events):
+                    metadata.setdefault("ui_warnings", []).append("AI memory unavailable; only a truncated recent history excerpt was used.")
+                    if metadata["status"] == "complete":
+                        metadata["status"] = "partial"
                 # Keep a small factual stage timeline with the saved conversation.
                 metadata = {**metadata, "ui_runtime_progress": list(stage_events)}
                 storage.add_assistant_message(

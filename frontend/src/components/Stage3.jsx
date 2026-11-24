@@ -1,7 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import './Stage3.css';
 
-export default function Stage3({ finalResponse, verdict }) {
+export default function Stage3({ finalResponse, verdict, status, warnings = [] }) {
   if (!finalResponse) {
     return null;
   }
@@ -13,11 +13,14 @@ export default function Stage3({ finalResponse, verdict }) {
     || (finalResponse.model === 'error' && /all models failed to respond/i.test(finalResponse.response || ''));
   const failed = Boolean(finalResponse.error_status)
     || noResponses
-    || /^Error: Unable to generate final synthesis/i.test(finalResponse.response || '');
+    || finalResponse.model === 'error'
+    || typeof finalResponse.response !== 'string'
+    || !finalResponse.response.trim()
+    || /^Error: Unable to generate final synthesis/i.test(finalResponse.response.trimStart());
 
   return (
     <div className={`stage stage3 ${failed ? 'stage3-failed' : ''}`}>
-      <h3 className="stage-title">{noResponses ? 'Council unavailable: no model responses' : failed ? 'Stage 3: Chairman unavailable' : 'Stage 3: Final Council Answer'}</h3>
+      <h3 className="stage-title">{noResponses ? 'Council unavailable: no model responses' : failed ? 'Stage 3: Chairman unavailable' : status === 'partial' ? 'Stage 3: Partial Council Answer' : 'Stage 3: Final Council Answer'}</h3>
       <div className="final-response">
         {!noResponses && (
           <div className="chairman-label">
@@ -40,6 +43,13 @@ export default function Stage3({ finalResponse, verdict }) {
                 ))}
               </ul>
             )}
+          </div>
+        )}
+
+        {!failed && warnings.length > 0 && (
+          <div role="status">
+            <strong>Limitations of this round:</strong>
+            <ul>{warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
           </div>
         )}
 

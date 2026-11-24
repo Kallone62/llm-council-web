@@ -18,6 +18,10 @@ Bu belge gelecekte ele alınacak işleri listeler; hiçbir çözüm uygulanmış
 - [ ] **Windows güncellemesi:** Eski sorunlu YAML ayarlarının yeni sürüme taşınması ve EXE başlatmanın başarılı kurulum sayılması incelenecek. (`scripts/install.ps1:42–91`)
 - [ ] **Windows CI mantık hatası:** API 200 döndüğünde ayarlanan `apiReady` değerinin sonraki Free profil/API anahtarı kontrolleri başarısız olsa bile true kalması incelenecek. (`.github/workflows/windows-release.yml:127–139`)
 
+### P1 uygulama notu (doğrulama bekliyor)
+
+P1 değişiklikleri: başarısız/boş final yanıtlarının hafızadan çıkarılması ve eski özetlerin kaynak özetiyle doğrulanması; Free için sınırlı model alternatifi ve açıkça eksik bağlam uyarısı; gerçek peer-ranking/final durumları ve kısmi sonuçların görünür kılınması; merkezi Free preset uygulaması ve eski Free YAML migrasyonu; YAML doğrulaması; Windows installer readiness/rollback ve CI false-positive düzeltmesi. Regresyon testleri eklendi. P0 katalog/model erişimi ve oturum içi ayar değişikliği, P2 ve gerçek OpenRouter/Windows kabul testleri bu değişiklikle çözülmüş sayılmaz. Yukarıdaki kutular kabul testleri tamamlanmadan kapatılmayacaktır.
+
 ## P2 — Veri ve arayüz tutarlılığı
 
 - [ ] **Frontend/backend senkronizasyonu:** Reddedilen isteklerde ekrandaki mesajlarla kaydedilen mesajların farklılaşması ve tamamlanmadan kapanan SSE bağlantılarının yönetimi incelenecek. (`frontend/src/App.jsx:126–261`, `frontend/src/api.js:134–157`)
