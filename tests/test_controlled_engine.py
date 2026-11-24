@@ -1065,3 +1065,105 @@ def test_eng08_chairman_failure_and_followup(provider_http, tmp_path, monkeypatc
         if failed_answer:
             assert failed_answer not in expected_followup and questions[1] not in expected_followup
     assert council._get_chairman_model() == FREE_CHAIRMAN
+
+
+@pytest.mark.parametrize("blank", ["", " \n\t", None], ids=["empty", "whitespace", "null"])
+@pytest.mark.parametrize("mode", ["synthesis", "binary", "tie_breaker"])
+@pytest.mark.parametrize("stream", [False, True], ids=["rest", "sse"])
+def test_eng09_empty_chairman_and_followup(provider_http, tmp_path, monkeypatch, stream, mode, blank):
+    """HTTP 200 without usable synthesis must not become a decision or memory."""
+    from fastapi.testclient import TestClient
+    from backend import main, storage
+
+    questions = ["ENG-09 prior: retain the blue archive.", "ENG-09 blank: evaluate the red archive.",
+                 "ENG-09 followup: what was retained?"]
+    prior_answer = "Retain BLUE_ARCHIVE."
+    followup_answer = "The blue archive was retained."
+    round_index = 0
+    calls = []
+    effective = []
+    monkeypatch.setenv("LLM_COUNCIL_QUALITY_METRICS", "true")
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+
+    def reply(request):
+        assert request.method == "POST" and str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
+        assert request.headers.get("authorization") == "Bearer eng-01-test-only-not-a-real-key"
+        body = json.loads(request.content)
+        model = body["model"]
+        assert model in FREE_MODELS
+        prompt = body["messages"][-1]["content"]
+        assert questions[round_index] in prompt
+        if "<responses_to_evaluate>" in prompt:
+            stage, content = "stage2", REVIEW_TEXT
+            assert all(answer in prompt for answer in ANSWERS.values())
+        elif prompt.startswith("You are the Chairman"):
+            stage, content = "stage3", (prior_answer, blank, followup_answer)[round_index]
+            assert model == FREE_CHAIRMAN
+            assert "AGGREGATE RANKINGS" in prompt and REVIEW_TEXT in prompt
+        else:
+            stage, content = "stage1", ANSWERS[model]
+            effective.append((round_index, prompt))
+        calls.append((round_index, stage, model))
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": content}}], "usage": USAGE})
+
+    transport = httpx.MockTransport(reply)
+
+    async def handle(_self, request):
+        return await transport.handle_async_request(request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
+    assert main.run_full_council is council.run_full_council
+    with TestClient(main.app) as client:
+        created = client.post("/api/conversations", json={})
+        assert created.status_code == 200
+        cid = created.json()["id"]
+        endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
+        saved = []
+        for round_index, question in enumerate(questions):
+            result = client.post(endpoint, json={"content": question, "verdict_type": mode if round_index == 1 else "synthesis"})
+            assert result.status_code == 200, result.text
+            if stream:
+                assert result.headers["content-type"].startswith("text/event-stream")
+                events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+                assert [e["type"] for e in events] == ["engine_progress"] * 8 + ["stage1_complete", "stage2_complete", "stage3_complete", "complete"]
+                progress = [e["data"] for e in events[:8]]
+                stage1, stage2, stage3 = [e["data"] for e in events[-4:-1]]
+                metadata = events[-1]["metadata"]
+                assert events[-3]["metadata"] == events[-2]["metadata"] == metadata
+                assert metadata["ui_runtime_progress"] == progress
+                assert progress[-1]["stage"] == "stage3"
+                assert progress[-1]["state"] == ("failed" if round_index == 1 else "completed")
+                assert progress[-1].get("error_status") == ("empty_synthesis" if round_index == 1 else None)
+                assert isinstance(progress[-1]["elapsed_seconds"], (int, float)) and progress[-1]["elapsed_seconds"] >= 0
+            else:
+                payload = result.json()
+                stage1, stage2, stage3, metadata = [payload[key] for key in ("stage1", "stage2", "stage3", "metadata")]
+            expected = [(s, model) for s in ("stage1", "stage2") for model in FREE_MODELS] + [("stage3", FREE_CHAIRMAN)]
+            observed = [(s, model) for r, s, model in calls if r == round_index]
+            assert Counter(observed) == Counter(expected)
+            assert [s for s, _ in observed] == [s for s, _ in expected]
+            assert {r["model"]: r["response"] for r in stage1} == ANSWERS
+            assert len(stage2) == 3 and all(r["parsed_ranking"]["ranking"] == LABELS for r in stage2)
+            assert metadata["peer_review"]["state"] == "completed" and metadata["peer_review"]["effective_votes"] == 6
+            assert metadata["usage"]["total"]["total_tokens"] == 7 * USAGE["total_tokens"]
+            assert stage3["model"] == FREE_CHAIRMAN
+            if round_index == 1:
+                assert stage3["error_status"] == "empty_synthesis"
+                assert stage3["response"] == "Chairman returned no usable final synthesis."
+                assert metadata["status"] == "failed"
+                assert not metadata.get("verdict") and metadata.get("quality_metrics") is None
+            else:
+                assert stage3["response"] == (prior_answer if round_index == 0 else followup_answer)
+                assert not stage3.get("error_status") and metadata.get("status") not in ("failed", "partial")
+                assert metadata.get("quality_metrics") is not None
+            saved += [{"role": "user", "content": question}, {"role": "assistant", "stage1": stage1, "stage2": stage2, "stage3": stage3, "metadata": metadata}]
+            persisted = json.loads((tmp_path / "conversations" / f"{cid}.json").read_text(encoding="utf-8"))
+            assert persisted["messages"] == saved and not persisted.get("context_memory")
+            reloaded = client.get(f"/api/conversations/{cid}")
+            assert reloaded.status_code == 200 and reloaded.json()["messages"] == saved
+        expected_followup = ("Conversation background from prior completed Council rounds (not the current request):\n\n"
+                             + "Previous user question: " + json.dumps(questions[0])
+                             + "\nPrevious Council final answer: " + json.dumps(prior_answer)
+                             + "\n\nCurrent user question for this Council round:\n" + questions[2])
+        assert [prompt for r, prompt in effective if r == 2] == [expected_followup] * 3
+    assert council._get_chairman_model() == FREE_CHAIRMAN
