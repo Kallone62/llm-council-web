@@ -30,27 +30,40 @@ function parsedRanking(value) {
   return [];
 }
 
-export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
+export default function Stage2({ rankings, labelToModel, aggregateRankings, reviewStatus }) {
   const [activeTab, setActiveTab] = useState(0);
+  const state = reviewStatus?.state;
+  const notice = {
+    failed: 'No usable peer review was recorded. Any Chairman answer is not peer-validated.',
+    partial: 'Peer review is incomplete. Any Chairman answer is only partially peer-reviewed.',
+    skipped: 'Peer review was skipped because only one model responded. Any Chairman answer is not peer-validated.',
+  }[state];
+  const reviews = Array.isArray(rankings) ? rankings.filter(rank => rank && typeof rank === 'object') : [];
+  const current = reviews[activeTab] || reviews[0];
 
-  if (!rankings || rankings.length === 0) {
+  if (!current && !notice) {
     return null;
   }
 
-  const extractedRanking = parsedRanking(rankings[activeTab].parsed_ranking);
+  const extractedRanking = current && state !== 'failed' && !current.parsed_ranking?.abstained
+    ? [...new Set(parsedRanking(current.parsed_ranking).filter(label =>
+        typeof label === 'string' && (!labelToModel || Object.hasOwn(labelToModel, label))))]
+    : [];
 
   return (
     <div className="stage stage2">
       <h3 className="stage-title">Stage 2: Peer Rankings</h3>
+      {notice && <p className="stage-description" role={state === 'skipped' ? 'note' : 'alert'}>{notice}</p>}
 
+      {current && <>
       <h4>Raw Evaluations</h4>
       <p className="stage-description">
-        Each model evaluated all responses (anonymized as Response A, B, C, etc.) and provided rankings.
+        Returned peer evaluations are shown below, including incomplete or unusable responses.
         Below, model names are shown in <strong>bold</strong> for readability, but the original evaluation used anonymous labels.
       </p>
 
       <div className="tabs">
-        {rankings.map((rank, index) => (
+        {reviews.map((rank, index) => (
           <button
             key={index}
             className={`tab ${activeTab === index ? 'active' : ''}`}
@@ -63,11 +76,11 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
 
       <div className="tab-content">
         <div className="ranking-model">
-          {rankings[activeTab].model}
+          {current.model}
         </div>
         <div className="ranking-content markdown-content">
           <ReactMarkdown>
-            {deAnonymizeText(rankings[activeTab].ranking, labelToModel)}
+            {deAnonymizeText(typeof current.ranking === 'string' ? current.ranking : '', labelToModel)}
           </ReactMarkdown>
         </div>
 
@@ -86,8 +99,9 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
           </div>
         )}
       </div>
+      </>}
 
-      {aggregateRankings && aggregateRankings.length > 0 && (
+      {state !== 'failed' && state !== 'skipped' && aggregateRankings && aggregateRankings.length > 0 && (
         <div className="aggregate-rankings">
           <h4>Aggregate Rankings (Street Cred)</h4>
           <p className="stage-description">
@@ -103,12 +117,12 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
 
               return (
                 <div key={index} className="aggregate-item">
-                  <span className="rank-position">#{agg.rank || index + 1}</span>
+                  <span className="rank-position">{votes > 0 ? '#' + (agg.rank || index + 1) : 'Unranked'}</span>
                   <span className="rank-model">
                     {modelShortName(agg.model)}
                   </span>
                   <span className="rank-score">
-                    {borda !== null
+                    {votes <= 0 ? 'Unranked' : borda !== null
                       ? `Borda: ${borda.toFixed(3)}`
                       : (avgPosition !== null ? `Avg pos: ${avgPosition.toFixed(2)}` : 'Unranked')}
                   </span>

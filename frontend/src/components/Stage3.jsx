@@ -1,7 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import './Stage3.css';
 
-export default function Stage3({ finalResponse, verdict }) {
+export default function Stage3({ finalResponse, verdict, reviewStatus }) {
   if (!finalResponse) {
     return null;
   }
@@ -15,9 +15,11 @@ export default function Stage3({ finalResponse, verdict }) {
     || noResponses
     || /^Error: Unable to generate final synthesis/i.test(finalResponse.response || '');
 
+  const limitedReview = ['failed', 'partial', 'skipped'].includes(reviewStatus?.state);
+
   return (
     <div className={`stage stage3 ${failed ? 'stage3-failed' : ''}`}>
-      <h3 className="stage-title">{noResponses ? 'Council unavailable: no model responses' : failed ? 'Stage 3: Chairman unavailable' : 'Stage 3: Final Council Answer'}</h3>
+      <h3 className="stage-title">{noResponses ? 'Council unavailable: no model responses' : failed ? 'Stage 3: Chairman unavailable' : limitedReview ? 'Stage 3: Chairman Answer (limited peer review)' : 'Stage 3: Final Council Answer'}</h3>
       <div className="final-response">
         {!noResponses && (
           <div className="chairman-label">
@@ -46,7 +48,7 @@ export default function Stage3({ finalResponse, verdict }) {
         {!failed && verdict && (
           <div className="verdict-summary">
             <div className="verdict-heading">
-              Decision: <strong>{verdict.verdict}</strong>
+              {limitedReview ? 'Chairman decision (not fully peer-validated):' : 'Decision:'} <strong>{verdict.verdict}</strong>
               {typeof verdict.confidence === 'number' && (
                 <span> · Confidence: {(verdict.confidence * 100).toFixed(0)}%</span>
               )}

@@ -138,6 +138,72 @@ def normalize_stage3_response(stage3: dict) -> dict:
     return stage3
 
 
+def summarize_peer_reviews(rankings: list, label_to_model: dict) -> dict:
+    """Describe the native parsed ballots without changing the ranking algorithm."""
+    labels = set(label_to_model or {})
+    counts = {"valid_reviews": 0, "partial_reviews": 0, "invalid_reviews": 0,
+              "abstained_reviews": 0}
+    for review in rankings:
+        parsed = review.get("parsed_ranking") if isinstance(review, dict) else None
+        if isinstance(parsed, dict) and parsed.get("abstained"):
+            counts["abstained_reviews"] += 1
+            continue
+        ballot = parsed.get("ranking") if isinstance(parsed, dict) else None
+        known = (
+            {label for label in ballot if isinstance(label, str) and label in labels}
+            if isinstance(ballot, list) else set()
+        )
+        if not known:
+            counts["invalid_reviews"] += 1
+        elif known == labels and len(ballot) == len(labels):
+            counts["valid_reviews"] += 1
+        else:
+            counts["partial_reviews"] += 1
+    if not (counts["valid_reviews"] or counts["partial_reviews"]):
+        state = "failed"
+    elif counts["valid_reviews"] == len(rankings):
+        state = "completed"
+    else:
+        state = "partial"
+    return {"state": state, "reviews": len(rankings), **counts}
+
+
+def annotate_peer_review(stage1: list, stage2: list, stage3: dict, metadata: dict) -> dict:
+    """Expose review coverage and native effective votes, including cached runs."""
+    metadata = dict(metadata or {})
+    review = summarize_peer_reviews(stage2, metadata.get("label_to_model"))
+    votes = [
+        item.get("vote_count") for item in (metadata.get("aggregate_rankings") or [])
+        if isinstance(item, dict)
+    ]
+    positive = [count for count in votes if type(count) is int and count > 0]
+    review.update(effective_votes=sum(positive), ranked_candidates=len(positive))
+    if not stage1:
+        review["state"] = "not_run"
+    elif len(stage1) == 1 and not stage2:
+        # Native single-model degradation deliberately skips peer review.
+        review["state"] = "skipped"
+    elif not positive:
+        review["state"] = "failed"
+    elif review["state"] == "completed" and len(positive) < len(stage1):
+        review["state"] = "partial"
+    metadata["peer_review"] = review
+    if (
+        review["state"] in ("failed", "partial")
+        and not stage3.get("error_status") and metadata.get("status") != "failed"
+    ):
+        metadata["status"] = "partial"
+    if "quality_metrics" in metadata and _peer_metrics_unavailable(review):
+        metadata["quality_metrics"] = None
+    return metadata
+
+
+def _peer_metrics_unavailable(review: dict) -> bool:
+    return review.get("state") in ("failed", "skipped", "not_run") or (
+        review.get("state") == "partial" and review.get("ranked_candidates", 0) < 2
+    )
+
+
 def wrap_stage(stage: str, original: Callable) -> Callable:
     """Transparent async decorator, also independently testable offline."""
     async def wrapped(*args, **kwargs):
@@ -158,7 +224,10 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
         if stage == "stage1" and isinstance(result, tuple):
             details["responses"] = len(result[0])
         elif stage == "stage2" and isinstance(result, tuple):
-            details["reviews"] = len(result[0])
+            details = summarize_peer_reviews(result[0], result[1])
+            state = details.pop("state")
+            await emit_progress(stage, state, **details)
+            return result
         if stage == "stage1" and details.get("responses") == 0:
             await emit_progress(stage, "failed", **details)
         elif stage == "stage3" and result[0].get("error_status"):
@@ -220,7 +289,10 @@ def repair_quality_metrics(stage1: list, stage2: list, stage3: dict, metadata: d
     """
     if not isinstance(metadata, dict) or "quality_metrics" not in metadata:
         return metadata
-    if normalize_stage3_response(stage3).get("error_status"):
+    if (
+        _peer_metrics_unavailable(metadata.get("peer_review", {}))
+        or normalize_stage3_response(stage3).get("error_status")
+    ):
         # Do not score a provider error or missing synthesis as a valid answer.
         return {**metadata, "quality_metrics": None}
     synthesis = stage3["response"]

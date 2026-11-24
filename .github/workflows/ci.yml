@@ -33,6 +33,10 @@ jobs:
         working-directory: frontend
         run: npm install
 
+      - name: Test peer-review rendering
+        working-directory: frontend
+        run: node --test tests/stage2-status.test.mjs
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build
