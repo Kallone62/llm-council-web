@@ -3,7 +3,7 @@
 The pinned engine has four native tiers. Free is a distinct application preset
 that changes only the active Council model/Chairman and Free safety options,
 while preserving whichever native tier was already selected. In particular,
-selecting Free does NOT select or redefine Quick. No engine fork or Ollama.
+selecting Free does NOT select or redefine Quick. No Free-specific engine fork or Ollama.
 """
 
 from __future__ import annotations
