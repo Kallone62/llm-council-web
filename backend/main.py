@@ -469,6 +469,14 @@ async def _run_council_with_free_chairman_recovery(query: str, *, free_mode: boo
                 metadata = {**(metadata or {}), "status": "failed"}
                 metadata.pop("verdict", None)
         metadata = engine_runtime.annotate_peer_review(stage1, stage2, stage3, metadata)
+        # Native compatibility API reports council size and usable responses,
+        # but does not mark a reduced council as partial when review succeeds.
+        configured = (metadata.get("config") or {}).get("council_size")
+        if (
+            type(configured) is int and 0 < len(stage1) < configured
+            and not stage3.get("error_status") and metadata.get("status") != "failed"
+        ):
+            metadata["status"] = "partial"
         return stage1, stage2, stage3, metadata
     finally:
         engine_runtime.unwatch_free_chairman_retry(token)
