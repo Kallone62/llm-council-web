@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 import yaml
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from .default_pools import TIER_NAMES, default_pool_models, default_pools
 from .tier_contract import TierContract, create_tier_contract
@@ -317,6 +317,8 @@ class GatewayConfig(BaseModel):
     # Allow fields starting with "model_" (Pydantic v2 reserves this prefix by default)
     model_config = ConfigDict(protected_namespaces=())
 
+    _explicit_providers: Optional[set[str]] = PrivateAttr(default=None)
+
     default: str = Field(default="openrouter")
     providers: Dict[str, Union[GatewayProviderConfig, OllamaProviderConfig]] = Field(
         default_factory=dict
@@ -355,6 +357,8 @@ class GatewayConfig(BaseModel):
     @model_validator(mode="after")
     def ensure_default_providers(self) -> "GatewayConfig":
         """Ensure all standard gateway providers exist."""
+        if self._explicit_providers is None:
+            self._explicit_providers = set(self.providers)
         default_providers: Dict[str, Union[GatewayProviderConfig, OllamaProviderConfig]] = {
             "openrouter": GatewayProviderConfig(
                 enabled=True,
@@ -1294,6 +1298,12 @@ def _apply_env_overrides(config: UnifiedConfig) -> UnifiedConfig:
     """
     # Copy config data
     config_dict = config.to_dict()
+    # Do not turn injected provider defaults into an explicit fallback opt-in.
+    providers = config_dict["gateways"]["providers"]
+    config_dict["gateways"]["providers"] = {
+        name: value for name, value in providers.items()
+        if name in (config.gateways._explicit_providers or set())
+    }
 
     # Tier overrides
     tier_env = os.getenv("LLM_COUNCIL_DEFAULT_TIER")

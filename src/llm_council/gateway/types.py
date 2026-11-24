@@ -138,3 +138,4 @@ class GatewayResponse:
     retry_after: Optional[int] = None  # For rate limiting
     # Provider reasoning trace (o1/o3/deepseek-r1 etc.), when returned (#375).
     reasoning_details: Optional[Any] = None
+    failure_kind: Optional[str] = None

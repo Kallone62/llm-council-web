@@ -12,9 +12,10 @@ from typing import TYPE_CHECKING, List, Dict, Any, Optional, Callable, Awaitable
 
 # ADR-032: Migrated to unified_config
 from llm_council.log_safety import safe_log
-from llm_council.unified_config import get_api_key
+from llm_council.unified_config import get_api_key, get_config
 
-from llm_council.gateway.resolver import resolve_endpoint, resolve_model_name
+from llm_council.gateway.resolver import resolve_endpoint, resolve_model_name, resolve_fallback_endpoints
+from llm_council.gateway.fallback_policy import can_retry, response_failure_kind
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,33 @@ def resolve_missing_cost(
         logger.debug("cost fallback failed; leaving cost unknown", exc_info=True)
 
 
+async def _post_with_fallback(client, primary, canonical_model, payload, timeout):
+    """Use one elapsed-time budget and the native payload on each opted-in route."""
+    policy = get_config().gateways.fallback
+    endpoints = [primary, *resolve_fallback_endpoints(canonical_model, primary[2])]
+    deadline = time.monotonic() + timeout
+    for index, (url, key, route) in enumerate(endpoints):
+        remaining = timeout if index == 0 else deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError()
+        wire_model = resolve_model_name(canonical_model, route)
+        wire_payload = {**payload, "model": wire_model}
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        has_next = index + 1 < len(endpoints)
+        try:
+            options = {"timeout": remaining} if index else {}
+            response = await asyncio.wait_for(
+                client.post(url, headers=headers, json=wire_payload, **options), timeout=remaining
+            )
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            if has_next and can_retry(policy, "timeout") and time.monotonic() < deadline:
+                continue
+            raise
+        if has_next and can_retry(policy, response_failure_kind(response)) and time.monotonic() < deadline:
+            continue
+        return response, wire_model, route
+
+
 async def query_model_with_status(
     model: str,
     messages: List[Dict[str, str]],
@@ -306,16 +334,11 @@ async def query_model_with_status(
     Returns:
         Response dict with 'status', 'content', 'latency_ms', 'usage', and optional 'error'
     """
-    api_url, api_key, route = resolve_endpoint()
+    primary = resolve_endpoint()
+    route = primary[2]
     # #694 gate: keep the canonical id. `registry.yaml` is keyed by it, and the
     # rewritten form is only for the wire.
     canonical_model = model
-    model = resolve_model_name(model, route)
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
 
     # Build payload using gateway function for reasoning injection (ADR-026)
     from llm_council.gateway.openrouter import build_openrouter_payload
@@ -340,8 +363,8 @@ async def query_model_with_status(
             # is the actual elapsed-time bound. An OUTER cancellation (the ADR-040
             # global deadline) still propagates: wait_for re-raises CancelledError,
             # which derives from BaseException and is not caught below.
-            response = await asyncio.wait_for(
-                client.post(api_url, headers=headers, json=payload), timeout=timeout
+            response, model, route = await asyncio.wait_for(
+                _post_with_fallback(client, primary, canonical_model, payload, timeout), timeout=timeout
             )
             latency_ms = int((time.time() - start_time) * 1000)
 

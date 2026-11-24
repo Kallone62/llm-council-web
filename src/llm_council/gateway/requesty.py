@@ -14,6 +14,8 @@ from typing import AsyncIterator, Dict, Any, List, Optional
 
 import httpx
 
+from .fallback_policy import response_failure_kind
+
 from .base import (
     DEFAULT_HEALTH_CHECK_MODEL,
     BaseRouter,
@@ -226,6 +228,7 @@ class RequestyGateway(BaseRouter):
                     retry_after = response.headers.get("Retry-After", "60")
                     return {
                         "status": "rate_limited",
+                        "failure_kind": response_failure_kind(response),
                         "latency_ms": latency_ms,
                         "error": f"Rate limited by {model}",
                         "retry_after": int(retry_after) if retry_after.isdigit() else 60,
@@ -234,6 +237,7 @@ class RequestyGateway(BaseRouter):
                 if response.status_code in (401, 403):
                     return {
                         "status": "auth_error",
+                        "failure_kind": "auth_error",
                         "latency_ms": latency_ms,
                         "error": f"Authentication failed for {model}: {response.status_code}",
                     }
@@ -273,6 +277,10 @@ class RequestyGateway(BaseRouter):
                 "latency_ms": latency_ms,
                 "error": f"Timeout after {timeout}s",
             }
+
+        except httpx.HTTPStatusError as e:
+            return {"status": "error", "failure_kind": response_failure_kind(e.response),
+                    "latency_ms": int((time.time() - start_time) * 1000), "error": str(e)}
 
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
@@ -340,6 +348,7 @@ class RequestyGateway(BaseRouter):
             latency_ms=result.get("latency_ms"),
             error=result.get("error"),
             retry_after=result.get("retry_after"),
+            failure_kind=result.get("failure_kind"),
         )
 
     async def complete_stream(self, request: GatewayRequest) -> AsyncIterator[str]:

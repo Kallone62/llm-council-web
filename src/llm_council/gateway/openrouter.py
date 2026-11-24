@@ -15,6 +15,8 @@ from typing import AsyncIterator, Dict, Any, List, Optional
 
 import httpx
 
+from .fallback_policy import response_failure_kind
+
 # ADR-032: Migrated to unified_config
 from llm_council.log_safety import safe_log
 from llm_council.unified_config import get_api_key
@@ -331,6 +333,7 @@ class OpenRouterGateway(BaseRouter):
                     retry_after = response.headers.get("Retry-After", "60")
                     return {
                         "status": "rate_limited",
+                        "failure_kind": response_failure_kind(response),
                         "latency_ms": latency_ms,
                         "error": f"Rate limited by {model}",
                         "retry_after": int(retry_after) if retry_after.isdigit() else 60,
@@ -339,6 +342,7 @@ class OpenRouterGateway(BaseRouter):
                 if response.status_code in (401, 403):
                     return {
                         "status": "auth_error",
+                        "failure_kind": "auth_error",
                         "latency_ms": latency_ms,
                         "error": f"Authentication failed for {model}: {response.status_code}",
                     }
@@ -348,6 +352,7 @@ class OpenRouterGateway(BaseRouter):
                         "status": "error",
                         "latency_ms": latency_ms,
                         "error": f"Bad request for {model}: {response.text[:200]}",
+                        "failure_kind": "invalid_request",
                     }
 
                 response.raise_for_status()
@@ -387,6 +392,10 @@ class OpenRouterGateway(BaseRouter):
                 "latency_ms": latency_ms,
                 "error": f"Timeout after {timeout}s",
             }
+
+        except httpx.HTTPStatusError as e:
+            return {"status": "error", "failure_kind": response_failure_kind(e.response),
+                    "latency_ms": int((time.time() - start_time) * 1000), "error": str(e)}
 
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
@@ -451,6 +460,7 @@ class OpenRouterGateway(BaseRouter):
             latency_ms=result.get("latency_ms"),
             error=result.get("error"),
             retry_after=result.get("retry_after"),
+            failure_kind=result.get("failure_kind"),
             # #375: surface the reasoning trace instead of dropping it.
             reasoning_details=result.get("reasoning_details"),
         )

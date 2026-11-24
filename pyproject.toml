@@ -1,6 +1,6 @@
 [project]
 name = "llm-council-core"
-dynamic = ["version"]
+version = "0.53.0+eng18.1"
 description = "Multi-LLM council system with peer review and synthesis"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -88,14 +88,8 @@ Documentation = "https://llm-council.dev"
 llm-council = "llm_council.cli:main"
 
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.version]
-source = "vcs"
-
-[tool.hatch.build.hooks.vcs]
-version-file = "src/llm_council/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_council"]

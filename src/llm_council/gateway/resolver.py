@@ -56,3 +56,26 @@ def resolve_model_name(model: str, route: str) -> str:
         if mapping:
             return mapping.get(model, model)
     return model
+
+
+def resolve_fallback_endpoints(model: str, primary: str):
+    """Resolve explicitly opted-in, authenticated compatibility fallback routes."""
+    cfg = get_config()
+    policy = cfg.gateways.fallback
+    if not policy.enabled or model.endswith(":free") or primary not in policy.chain:
+        return []
+    urls = {"openrouter": OPENROUTER_API_URL, "requesty": REQUESTY_API_URL}
+    seen = {primary}
+    endpoints = []
+    for route in policy.chain[policy.chain.index(primary) + 1:]:
+        if route in seen or route not in urls:
+            continue
+        seen.add(route)
+        provider = cfg.gateways.providers.get(route)
+        if route not in (cfg.gateways._explicit_providers or set()) or provider is None or not provider.enabled:
+            continue
+        key = get_api_key(route) or provider.api_key or ""
+        if not key.strip():
+            continue
+        endpoints.append((provider.base_url or urls[route], key, route))
+    return endpoints

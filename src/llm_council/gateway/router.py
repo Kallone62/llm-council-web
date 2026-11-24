@@ -10,6 +10,8 @@ with features like:
 
 import asyncio
 import fnmatch
+import time
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
 from .base import BaseRouter, HealthStatus, RouterHealth
@@ -17,6 +19,8 @@ from .circuit_breaker import CircuitBreaker
 from .errors import CircuitOpenError
 from .openrouter import OpenRouterGateway
 from .types import GatewayRequest, GatewayResponse
+from .fallback_policy import can_retry
+from ..unified_config import get_config
 
 
 class GatewayRouter:
@@ -136,8 +140,11 @@ class GatewayRouter:
 
         # Build chain: [initial, ...fallbacks]
         chain_ids = [initial_gateway_id]
-        if initial_gateway_id in self._fallback_chains:
-            chain_ids.extend(self._fallback_chains[initial_gateway_id])
+        policy = get_config().gateways.fallback
+        if policy.enabled and not request.model.endswith(":free"):
+            chain_ids.extend(g for g in self._fallback_chains.get(initial_gateway_id, []) if g != initial_gateway_id)
+        chain_ids = list(dict.fromkeys(chain_ids))
+        deadline = time.monotonic() + (request.timeout if request.timeout is not None else 120.0)
 
         last_exception = None
 
@@ -170,10 +177,15 @@ class GatewayRouter:
                     f"Circuit is open for gateway {gateway_id}",
                     router_id=gateway_id,
                 )
-                continue
+                if can_retry(policy, "server_error"):
+                    continue
+                raise last_exception
 
             try:
-                response = await gateway.complete(request)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                response = await asyncio.wait_for(gateway.complete(replace(request, timeout=remaining)), remaining)
 
                 # Record success/failure based on response status
                 if response.status == "ok":
@@ -192,35 +204,32 @@ class GatewayRouter:
                         layer_to="L3",
                     )
                     return response
-                elif response.status in ("error", "timeout"):
+                kind = response.failure_kind or {"timeout": "timeout", "rate_limited": "rate_limit",
+                                                  "auth_error": "auth_error"}.get(response.status)
+                if kind in ("server_error", "timeout", "rate_limit"):
                     cb.record_failure()
 
-                    # ADR-024: Emit response event for errors too (observability)
-                    emit_layer_event(
-                        LayerEventType.L4_GATEWAY_RESPONSE,
-                        {
-                            "gateway": gateway_id,
-                            "latency_ms": response.latency_ms,
-                            "status": response.status,
-                            "model": response.model,
-                            "error": response.error,
-                        },
-                        layer_from="L4",
-                        layer_to="L3",
-                    )
+                emit_layer_event(
+                    LayerEventType.L4_GATEWAY_RESPONSE,
+                    {"gateway": gateway_id, "latency_ms": response.latency_ms,
+                     "status": response.status, "model": response.model, "error": response.error},
+                    layer_from="L4", layer_to="L3",
+                )
+                if not can_retry(policy, kind):
+                    return response
+                last_exception = Exception(
+                    f"Gateway {gateway_id}: {response.error or response.status}"
+                )
 
-                    # Keep track of error but continue to next fallback
-                    if response.error:
-                        last_exception = Exception(f"Gateway {gateway_id} error: {response.error}")
-                    else:
-                        last_exception = Exception(
-                            f"Gateway {gateway_id} returned status {response.status}"
-                        )
-
-            except Exception as e:
+            except (asyncio.TimeoutError, TimeoutError) as e:
                 cb.record_failure()
                 last_exception = e
-                continue
+                if can_retry(policy, "timeout") and time.monotonic() < deadline:
+                    continue
+                raise
+            except Exception:
+                cb.record_failure()
+                raise
 
         # If we get here, all gateways failed
         if last_exception:
