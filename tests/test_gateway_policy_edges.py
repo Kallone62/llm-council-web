@@ -58,20 +58,23 @@ def test_native_transport_policy(gateway_config, monkeypatch, code, config_chang
     calls = []
     async def handle(_transport, request):
         url = str(request.url)
-        calls.append(url)
         assert request.headers['authorization'] == 'Bearer ' + KEYS[url]
         body = json.loads(request.content)
         assert body['model'] == ('mapped-model' if url == SECONDARY and config_change == 'remap' else model)
         assert body['messages'] == [{'role':'user','content':QUESTION}]
         assert body['tools'] == [] and body['tool_choice'] == 'none'
-        assert body['reasoning']['effort'] == 'high'
+        if config_change == 'free':
+            assert 'reasoning' not in body
+        else:
+            assert body['reasoning']['effort'] == 'high'
+        calls.append(url)
         if url == PRIMARY or config_change == 'exhausted':
             return httpx.Response(code, json={'error': {'message': 'fixture'}})
         return httpx.Response(200, json={'choices':[{'message':{'content':FINAL,'reasoning_details':[{'text':'fixture reasoning'}]}}],
             'usage':{'prompt_tokens':11,'completion_tokens':7,'total_tokens':18,'cost':0.0125,'cached_tokens':3}})
     monkeypatch.setattr(httpx.AsyncHTTPTransport,'handle_async_request',handle)
     result = asyncio.run(openrouter.query_model_with_status(model,[{'role':'user','content':QUESTION}],
-        timeout=2,disable_tools=True,reasoning_params=ReasoningParams(effort='high',max_tokens=1024)))
+        timeout=2,disable_tools=True,reasoning_params=None if config_change == 'free' else ReasoningParams(effort='high',max_tokens=1024)))
     assert calls == expected
     if len(expected) == 2 and config_change != 'exhausted':
         assert result['status'] == 'ok' and result['content'] == FINAL and result['route'] == 'requesty'
