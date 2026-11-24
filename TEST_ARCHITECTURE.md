@@ -245,13 +245,14 @@ Her oturumda yalnızca sıradaki tek iş ele alınır. Kod değişikliği, doğr
 ### Aşama 1 — Mevcut test kapsamı ve yanlış başarı kontrolleri
 
 - Kapsam sınıflandırması: Bölüm 2'deki mevcut denetim tablosu başlangıç referansıdır; mock tabanlı API testleri gerçek motor kabulü değildir.
-- **İş 1.1 — Windows smoke Settings API false-positive düzeltmesi (kod uygulandı, doğrulama bekliyor).**
+- **İş 1.1 — Windows smoke Settings API false-positive düzeltmesi (normal testler PASS, mutation doğrulaması bekliyor).**
 - Başlangıç commit'i: `e52257fcb0053ad1aceab0915ac0782b76541230`.
 - Değişiklik: `.github/workflows/windows-release.yml` artık `apiReady` değerini ancak HTTP 200, geçerli JSON, Free profil ve açıkça boolean false olan API key durumunun tamamı doğrulandıktan sonra true yapar. Doğrulama hatası mevcut retry/catch akışında readiness başarısı üretmez.
 - Ortak gerçek kontrol: `scripts/windows/assert-smoke-settings.ps1`. Regresyon: `tests/windows/test-smoke-settings.ps1`; geçerli durum ve HTTP 200 ile yanlış profil/anahtar, eksik alanlar, yanlış tip, bozuk JSON, HTTP hatası olmak üzere sekiz senaryo. Windows workflow bu testi EXE derlemesinden önce çalıştırır.
 - Doğrulama komutu: `pwsh -NoProfile -File tests/windows/test-smoke-settings.ps1`.
-- Durum: **PENDING** — yerel çalışma ortamında PowerShell yok; Windows CI sonucu ve paketli smoke sonucu henüz doğrulanmadı. Bu test gerçek kurulum/yükseltme veya tüm WIN-01/WIN-06 kabulünün kanıtı değildir. Bölüm 9'daki tam mutation doğrulaması da bekliyor.
-- Kanıt: [uygulama commit'i `2df1409`](https://github.com/Kallone62/llm-council-web/commit/2df1409016ba497c5946d9e8428223b94cd91b59), [PR #22](https://github.com/Kallone62/llm-council-web/pull/22), dal `test-architecture/step-1-smoke-settings`. İlk kontrolde commit için Actions run kaydı henüz görünmedi; sonuç doğrulandığında run bağlantısı ve PASS/FAIL kaydedilecek.
-- **Sıradaki iş:** önce yalnız İş 1.1'in Windows regresyonu ve paketli smoke sonucunu doğrula; başarısızsa aynı işi düzelt. Ardından Aşama 1'de kalan yanıltıcı başarı kontrollerine geç. Aşama 2 başlatılmadı.
+- Normal doğrulama: **PASS** — [Windows CI #45386758241](https://github.com/Kallone62/llm-council-web/actions/runs/45386758241) içinde sekiz regresyon senaryosu, EXE derleme ve paketli smoke geçti; [CI #45386758252](https://github.com/Kallone62/llm-council-web/actions/runs/45386758252) Pytest ve frontend build geçti. Her ikisi `a6660a80ac479461a00127fbd865f8f34570a493` için çalıştı. Linux sandbox'ta `pwsh` yok, dış ağ DNS çözümlemesi başarısız; gerçek PowerShell doğrulaması Windows runner'da yapıldı. Bu test gerçek kurulum/yükseltme veya tüm WIN-01/WIN-06 kabulü değildir.
+- Mutation doğrulaması: `pwsh -NoProfile -File tests/windows/test-smoke-settings-mutation.ps1`. Değişmemiş regresyon testinin önce doğru kodda PASS, sonra geçici kopyada profil ve anahtar korumaları ayrı ayrı kaldırılınca ilgili beklenen assertion'da FAIL, son olarak doğru kod geri gelince PASS olması zorunludur. Üretim kodu değiştirilmez. Sonuç: **PENDING**.
+- Kanıt: [uygulama commit'i `2df1409`](https://github.com/Kallone62/llm-council-web/commit/2df1409016ba497c5946d9e8428223b94cd91b59), [PR #22](https://github.com/Kallone62/llm-council-web/pull/22), dal `test-architecture/step-1-smoke-settings`. Normal CI kanıtı yukarıda; mutation çalışması ayrıca kaydedilecek.
+- **Sıradaki iş:** önce İş 1.1'in mutation sonucunu ve güncel PR CI sonucunu doğrula; başarısızsa aynı işi düzelt. Ardından Aşama 1'de kalan yanıltıcı başarı kontrollerine geç. Aşama 2 başlatılmadı.
 
 Beta yayını yapılmadı; mevcut release ve ürün özellikleri bu işin kapsamı dışındadır.

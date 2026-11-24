@@ -11,6 +11,7 @@ on:
       - scripts/install.ps1
       - scripts/windows/assert-smoke-settings.ps1
       - tests/windows/test-smoke-settings.ps1
+      - tests/windows/test-smoke-settings-mutation.ps1
       - .github/workflows/windows-release.yml
       - llm_council.yaml
   workflow_dispatch:
@@ -42,6 +43,10 @@ jobs:
       - name: Regression-test desktop smoke settings acceptance
         shell: pwsh
         run: ./tests/windows/test-smoke-settings.ps1
+
+      - name: Verify regression detects false-positive readiness
+        shell: pwsh
+        run: ./tests/windows/test-smoke-settings-mutation.ps1
 
       - name: Set up Python
         uses: actions/setup-python@v5
