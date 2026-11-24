@@ -458,13 +458,14 @@ def unwatch_progress(token) -> None:
 
 
 def repair_quality_metrics(stage1: list, stage2: list, stage3: dict, metadata: dict) -> dict:
-    """Recalculate Amiable's quality metric with the actual synthesis *text*.
+    """Recalculate Amiable's quality metrics with actual synthesis and review text.
 
     In core 0.53.0, run_full_council passes a {model, response} dictionary to
     the quality calculator, while its extraction helper expects {content}.
     This produces zero alignment and a false 1.0 hallucination-risk score.
-    We invoke Amiable's own metric function with its supported string input,
-    never implement or reinterpret the metric ourselves.
+    Stage 2 likewise uses {ranking} while the richness extractor expects
+    {content} or {raw_text}. Project these fields only for metric calculation;
+    never modify the saved reviews or reimplement the native formulas.
     """
     if not isinstance(metadata, dict) or "quality_metrics" not in metadata:
         return metadata
@@ -492,7 +493,10 @@ def repair_quality_metrics(stage1: list, stage2: list, stage3: dict, metadata: d
             return metadata
         corrected = calculate_quality_metrics(
             stage1_responses=stage1_dict,
-            stage2_rankings=stage2,
+            stage2_rankings=[
+                {**review, "content": review.get("content") or review.get("raw_text") or review.get("ranking", "")}
+                for review in stage2
+            ],
             stage3_synthesis=synthesis,
             aggregate_rankings=ordered,
             label_to_model=metadata.get("label_to_model"),
