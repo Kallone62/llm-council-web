@@ -22,10 +22,10 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run backend unit and regression tests
-        run: uv run python -m pytest -q --ignore=tests/test_controlled_engine.py --ignore=tests/test_controlled_memory.py --ignore=tests/test_controlled_concurrency.py --ignore=tests/test_controlled_profiles.py --ignore=tests/test_controlled_verdict.py
+        run: uv run python -m pytest -q --ignore=tests/test_controlled_engine.py --ignore=tests/test_controlled_memory.py --ignore=tests/test_controlled_concurrency.py --ignore=tests/test_controlled_profiles.py --ignore=tests/test_controlled_verdict.py --ignore=tests/test_controlled_synthesis_mode.py
 
       - name: Run controlled native engine acceptance (ENG-01)
-        run: uv run python -m pytest -q tests/test_controlled_engine.py tests/test_controlled_memory.py tests/test_controlled_concurrency.py tests/test_controlled_profiles.py tests/test_controlled_verdict.py
+        run: uv run python -m pytest -q tests/test_controlled_engine.py tests/test_controlled_memory.py tests/test_controlled_concurrency.py tests/test_controlled_profiles.py tests/test_controlled_verdict.py tests/test_controlled_synthesis_mode.py
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
