@@ -120,7 +120,33 @@ def verify(case, observed, stage1, stage2, stage3, metadata, title):
         values[6] = dict(zip(MODELS, values[6]))
         assert metadata["bias_audit"] == dict(zip(FIELDS, values))
     if title:
-        assert metadata["peer_review"]["effective_votes"] == (9 if case in ("partial", "no-scores") else 12)
+        partial = case in ("partial", "no-scores")
+        review = metadata["peer_review"]
+        assert review["state"] == ("partial" if partial else "completed")
+        assert review["valid_reviews"] == (3 if partial else 4)
+        assert review["abstained_reviews"] == (1 if partial else 0)
+        assert review["effective_votes"] == (9 if partial else 12)
+
+
+def decode_partial_response(response):
+    """A partial Stage 2 must not be reported as completed in SSE (ENG-07)."""
+    assert response.status_code == 200, response.text
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    assert [event["type"] for event in events[-5:]] == [
+        "stage1_complete", "stage2_complete", "stage3_complete", "complete", "title_complete"]
+    assert events[-1]["data"] == {"title": TITLE}
+    assert all(e["type"] == "engine_progress" for e in events[:-5])
+    progress = [e["data"] for e in events[:-5]]
+    assert [(e["stage"], e["state"]) for e in progress] == [
+        ("stage1", "started"), ("stage1", "completed"),
+        ("stage1_5", "started"), ("stage1_5", "completed"),
+        ("stage2", "started"), ("stage2", "partial"),
+        ("stage3", "started"), ("stage3", "completed")]
+    metadata = events[-2]["metadata"]
+    assert events[-4]["metadata"] == events[-3]["metadata"] == metadata
+    assert metadata["ui_runtime_progress"] == progress
+    return {"stage1": events[-5]["data"], "stage2": events[-4]["data"],
+            "stage3": events[-3]["data"], "metadata": metadata}
 
 
 @pytest.mark.parametrize("case", ROWS)
@@ -156,7 +182,9 @@ def test_bias_api(gateway_config, monkeypatch, tmp_path, case, stream):
         assert created.status_code == 200
         cid = created.json()["id"]
         endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
-        result = decode_response(client.post(endpoint, json={"content": QUESTION}), stream)
+        response = client.post(endpoint, json={"content": QUESTION})
+        result = (decode_partial_response(response) if stream and case in ("partial", "no-scores")
+                  else decode_response(response, stream))
         verify(case, observed, result["stage1"], result["stage2"], result["stage3"], result["metadata"], True)
         disk = storage.get_conversation(cid)
         assert disk["title"] == TITLE
