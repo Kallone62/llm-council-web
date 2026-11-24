@@ -10,17 +10,22 @@ permissions:
   checks: read
 
 jobs:
+  sonar-diagnostics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read prior Sonar annotations and public issue details
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/Kallone62/llm-council-web/check-runs/138807904490/annotations --paginate --jq '.[] | {path, start_line, annotation_level, title, message, raw_details}'
+          curl --silent --show-error --max-time 20 'https://sonarcloud.io/api/issues/search?componentKeys=Kallone62_llm-council-web&pullRequest=46&ps=100' | jq '{errors, issues: [.issues[]? | {key, rule, type, severity, component, line, message, impacts}]}'
+
   test:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Diagnose prior Sonar security annotations (temporary)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api repos/Kallone62/llm-council-web/check-runs/138807904490/annotations --paginate --jq '.[] | {path, start_line, annotation_level, message}'
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
