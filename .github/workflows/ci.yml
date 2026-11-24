@@ -37,6 +37,10 @@ jobs:
         working-directory: frontend
         run: node --test tests/stage2-status.test.mjs
 
+      - name: Test SSE stream contract
+        working-directory: frontend
+        run: node --test tests/sse-contract.test.mjs
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build
