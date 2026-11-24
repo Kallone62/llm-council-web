@@ -37,13 +37,16 @@ def provider_http(tmp_path, monkeypatch, request):
     monkeypatch.setenv("LLM_COUNCIL_EARLY_CONSENSUS", "false")
     scenario = getattr(request, "param", None)
     infra = scenario.split("-") if isinstance(scenario, str) and scenario.startswith("infra-") else None
+    peer = scenario.removeprefix("peer-") if isinstance(scenario, str) and scenario.startswith("peer-") else None
+    if peer:
+        monkeypatch.setenv("LLM_COUNCIL_QUALITY_METRICS", "true")
     config_path = tmp_path / "eng01.yaml"
     config_path.write_text(yaml.safe_dump({
         "tiers": {"default": "high"},
         "council": {"models": list(FREE_MODELS), "chairman": FREE_CHAIRMAN,
                     "synthesis_mode": "consensus", "exclude_self_votes": True,
                     "style_normalization": False,
-                    **({"max_reviewers": 2} if scenario == "review-cap" else {})},
+                    **({"max_reviewers": 2} if scenario == "review-cap" or peer in ("cap-good", "cap-missing") else {})},
         "gateways": {"default": "openrouter", "fallback": {"enabled": False}},
         "evaluation": {"rubric": {"enabled": False}, "safety": {"enabled": False},
                        "bias": {"audit_enabled": False, "persistence_enabled": False}},
@@ -61,7 +64,11 @@ def provider_http(tmp_path, monkeypatch, request):
     failed_model = limited_model if rate_stage1 else None if rate_stage2 or rate_stage3 or quota_stage or scenario == "review-cap" else scenario
     if infra:
         failed_model = FREE_MODELS[-1] if infra[1] == "stage1" else None
+    if peer:
+        failed_model = None
     failed_models = set(FREE_MODELS) if failed_model == "all" or quota_stage == "stage1" else {failed_model}
+    if peer in ("single", "binary-single"):
+        failed_models = set(FREE_MODELS) - {FREE_CHAIRMAN}
     available = {model: answer for model, answer in ANSWERS.items() if model not in failed_models}
     labels = LABELS[:len(available)]
     review_text = REVIEW_TEXT if failed_model is None else "All candidates address preservation.\n```json\n" + json.dumps({
@@ -84,6 +91,9 @@ def provider_http(tmp_path, monkeypatch, request):
             stage, content = "stage2", review_text
             assert QUESTION in prompt and all(answer in prompt for answer in available.values())
             assert all(ANSWERS[model] not in prompt for model in failed_models if model is not None)
+        elif peer in ("binary", "tie", "binary-valid", "binary-single", "binary-partial") and prompt.startswith("You are the Chairman"):
+            stage, content = "stage3", json.dumps({"verdict": "approved", "confidence": 0.8, "rationale": FINAL_TEXT, "deadlock_resolution": "Chairman judgment only"})
+            assert model == FREE_CHAIRMAN and QUESTION in prompt
         elif prompt.startswith("You are the Chairman of an LLM Council."):
             stage, content = "stage3", FINAL_TEXT
             if not (rate_stage1 or rate_stage2 or rate_stage3 or quota_stage or infra):
@@ -94,6 +104,20 @@ def provider_http(tmp_path, monkeypatch, request):
         else:
             pytest.fail("Unexpected provider prompt (no credentials or prompt text logged)")
         # Record no credentials or raw prompts. Native HTTP client parses the response.
+        if peer and stage == "stage2":
+            if peer == "empty" or (peer == "cap-missing" and not any(entry[0] == "stage2" for entry in calls)):
+                calls.append((stage, model, request.url.host, 503, chairman_context_matches))
+                return httpx.Response(503, json={"error": {"code": 503, "message": "Reviewer unavailable"}})
+            if peer in ("invalid", "binary", "tie") or (peer == "mixed" and model == FREE_MODELS[-1]):
+                content = json.dumps({"ranking": ["Response Z"], "scores": {}})
+            elif peer == "abstain":
+                content = "I cannot evaluate these responses."
+            elif peer in ("partial", "binary-partial"):
+                content = json.dumps({"ranking": ["Response A", "Response A", {}, "Response Z"], "scores": {}})
+            elif peer == "self":
+                import re
+                label = re.search(r'<candidate_response id="([A-Z])">\n' + re.escape(ANSWERS[model]), prompt).group(1)
+                content = json.dumps({"ranking": ["Response " + label], "scores": {}})
         if infra:
             expected_timeout = 120.0 if stage == "stage1" else 180.0
             assert request.extensions["timeout"] == dict.fromkeys(("connect", "read", "write", "pool"), expected_timeout)
@@ -805,3 +829,112 @@ def test_eng06_native_wall_clock_timeout(provider_http, monkeypatch):
         assert result["status"] == "timeout" and "0.05" in result["error"]
 
     asyncio.run(drive())
+
+
+@pytest.mark.parametrize("provider_http", ["peer-" + kind for kind in (
+    "empty", "invalid", "abstain", "partial", "self", "mixed", "single", "cap-good", "cap-missing", "valid", "binary", "tie", "binary-valid", "binary-single", "binary-partial",
+)], indirect=True)
+@pytest.mark.parametrize("stream", [False, True], ids=["rest", "sse"])
+def test_eng07_actual_peer_review(provider_http, request, tmp_path, monkeypatch, stream):
+    """Native ballots and effective votes, not just successful HTTP replies, determine review coverage."""
+    from fastapi.testclient import TestClient
+    from backend import main, storage
+
+    kind = request.node.callspec.params["provider_http"].removeprefix("peer-")
+    single = kind in ("single", "binary-single")
+    expected_state = "skipped" if single else "completed" if kind in ("valid", "cap-good", "binary-valid") else "partial" if kind in ("partial", "mixed", "cap-missing", "binary-partial") else "failed"
+    expected_reviews = 0 if single or kind == "empty" else 1 if kind == "cap-missing" else 2 if kind == "cap-good" else 3
+    expected_votes = {"empty": 0, "invalid": 0, "abstain": 0, "partial": 2, "self": 0, "mixed": 4, "single": 0, "cap-good": 4, "cap-missing": 2, "valid": 6, "binary": 0, "tie": 0, "binary-valid": 6, "binary-single": 0, "binary-partial": 2}[kind]
+    expected_calls = 4 if single else 6 if kind.startswith("cap-") else 7
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+    assert main.run_full_council is council.run_full_council
+    with TestClient(main.app) as client:
+        created = client.post("/api/conversations", json={})
+        assert created.status_code == 200
+        cid = created.json()["id"]
+        endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
+        payload = {"content": QUESTION, "verdict_type": "binary" if kind in ("binary", "binary-valid", "binary-single", "binary-partial") else "tie_breaker" if kind == "tie" else "synthesis"}
+        result = client.post(endpoint, json=payload)
+        assert result.status_code == 200, result.text
+        if stream:
+            assert result.headers["content-type"].startswith("text/event-stream")
+            events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+            assert [e["type"] for e in events[-4:]] == ["stage1_complete", "stage2_complete", "stage3_complete", "complete"]
+            assert all(e["type"] == "engine_progress" for e in events[:-4])
+            progress = [e["data"] for e in events[:-4]]
+            stage1, stage2, stage3 = [e["data"] for e in events[-4:-1]]
+            metadata = events[-1]["metadata"]
+            assert events[-3]["metadata"] == events[-2]["metadata"] == metadata
+            assert metadata["ui_runtime_progress"] == progress
+        else:
+            payload = result.json()
+            stage1, stage2, stage3, metadata = [payload[key] for key in ("stage1", "stage2", "stage3", "metadata")]
+        assert len(provider_http) == expected_calls
+        assert all(host == "openrouter.ai" and model in FREE_MODELS for _, model, host, _, _ in provider_http)
+        assert Counter(model for stage, model, *_ in provider_http if stage == "stage1") == Counter(FREE_MODELS)
+        assert [(model, code) for stage, model, _, code, _ in provider_http if stage == "stage3"] == [(FREE_CHAIRMAN, 200)]
+        review_calls = [(model, code) for stage, model, _, code, _ in provider_http if stage == "stage2"]
+        assert len(review_calls) == (0 if single else 2 if kind.startswith("cap-") else 3)
+        assert len({model for model, _ in review_calls}) == len(review_calls)
+        assert len(stage2) == expected_reviews and {r["model"] for r in stage2} == {model for model, code in review_calls if code == 200}
+        assert {r["model"]: r["response"] for r in stage1} == ({FREE_CHAIRMAN: ANSWERS[FREE_CHAIRMAN]} if single else ANSWERS)
+        mapping = metadata["label_to_model"]
+        assert {item["model"] for item in mapping.values()} == {r["model"] for r in stage1}
+        for review in stage2:
+            ballot = review["parsed_ranking"]
+            if kind == "abstain":
+                assert ballot["abstained"] and ballot["ranking"] == []
+            elif kind in ("invalid", "binary", "tie") or (kind == "mixed" and review["model"] == FREE_MODELS[-1]):
+                assert ballot["ranking"] == ["Response Z"]
+            elif kind in ("partial", "binary-partial"):
+                assert ballot["ranking"] == ["Response A", "Response A", {}, "Response Z"]
+            elif kind == "self":
+                assert len(ballot["ranking"]) == 1 and mapping[ballot["ranking"][0]]["model"] == review["model"]
+            else:
+                assert ballot["ranking"] == LABELS and review["ranking"] == REVIEW_TEXT
+        aggregate = metadata["aggregate_rankings"]
+        assert len(aggregate) == len(stage1)
+        assert sum(r["vote_count"] for r in aggregate) == expected_votes
+        assert all(0 <= r["borda_score"] <= 1 for r in aggregate if r.get("borda_score") is not None)
+        review = metadata["peer_review"]
+        assert review["state"] == expected_state and review["effective_votes"] == expected_votes
+        assert review["ranked_candidates"] == sum(r["vote_count"] > 0 for r in aggregate)
+        assert review["reviews"] == expected_reviews
+        assert stage3["model"] == FREE_CHAIRMAN and not stage3.get("error_status")
+        if kind == "cap-missing":
+            assert review["missing_review_count"] == 1
+        else:
+            assert not review.get("missing_review_count")
+        if kind in ("binary", "tie", "binary-valid", "binary-single", "binary-partial"):
+            assert json.loads(stage3["response"])["verdict"] == "approved"
+            assert metadata["verdict"]["verdict"] == "approved"
+            assert metadata["verdict"]["borda_spread"] == (1.0 if kind == "binary-valid" else None)
+            assert metadata["config"]["deadlock_detected"] is False
+        else:
+            assert stage3["response"] == FINAL_TEXT and not metadata.get("verdict")
+        if expected_state == "completed":
+            assert metadata.get("status") not in ("failed", "partial")
+            assert metadata.get("quality_metrics") is not None
+        else:
+            assert metadata["status"] == "partial"
+            if expected_state in ("failed", "skipped") or review["ranked_candidates"] < 2:
+                assert metadata.get("quality_metrics") is None
+        if stream:
+            stage2_events = [e for e in progress if e["stage"] == "stage2"]
+            if single:
+                assert stage2_events == []
+            else:
+                # Stage progress measures parsed ballots; final metadata additionally measures effective votes.
+                expected_progress = "partial" if kind == "self" else expected_state
+                assert [e["state"] for e in stage2_events] == ["started", expected_progress]
+                assert stage2_events[-1]["reviews"] == expected_reviews
+                if kind == "cap-missing":
+                    assert stage2_events[-1]["missing_review_count"] == 1
+            assert progress[-1]["stage"] == "stage3" and progress[-1]["state"] == "completed"
+        persisted = json.loads((tmp_path / "conversations" / f"{cid}.json").read_text(encoding="utf-8"))
+        assert persisted["messages"] == [
+            {"role": "user", "content": QUESTION},
+            {"role": "assistant", "stage1": stage1, "stage2": stage2, "stage3": stage3, "metadata": metadata},
+        ]
+        reloaded = client.get(f"/api/conversations/{cid}")
+        assert reloaded.status_code == 200 and reloaded.json()["messages"] == persisted["messages"]
