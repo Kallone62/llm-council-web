@@ -30,7 +30,7 @@ from . import storage
 from .conversation_context import ContextSummaryError, prepare_council_query
 from .free_profile import (
     FREE_MODELS, FREE_CHAIRMAN, FREE_SUMMARY_MODEL,
-    is_free_document, is_free_profile, safe_local_title,
+    is_free_document, is_free_profile, safe_local_title, FreeCatalogError, verify_free_catalog,
 )
 from . import engine_runtime
 
@@ -206,12 +206,26 @@ _council_state_lock = RLock()
 _active_council_runs = 0
 
 
-def _reserve_council_run() -> bool:
+async def _reserve_council_run() -> bool:
     global _active_council_runs
     with _council_state_lock:
         free_mode = _free_run_guard()
         _active_council_runs += 1
+    try:
+        if free_mode:
+            try:
+                await asyncio.to_thread(verify_free_catalog, resolve_endpoint()[1])
+            except FreeCatalogError:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Free model catalog could not confirm zero pricing for all "
+                           "configured models. Check Settings or retry.",
+                ) from None
         return free_mode
+    except BaseException:
+        # Includes cancellation during preflight; no inference may start.
+        _release_council_run()
+        raise
 
 
 def _release_council_run() -> None:
@@ -548,7 +562,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
-    free_mode = _reserve_council_run()
+    free_mode = await _reserve_council_run()
     try:
         try:
             council_query, new_memory = await prepare_council_query(
@@ -613,7 +627,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     is_first_message = len(conversation["messages"]) == 0
-    free_mode = _reserve_council_run()
+    free_mode = await _reserve_council_run()
 
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue()
