@@ -83,6 +83,8 @@ jobs:
         run: |
           uv sync --extra dev
           if ($LASTEXITCODE -ne 0) { throw 'uv sync failed' }
+          .venv/Scripts/python.exe -c "from importlib.metadata import version; import llm_council; assert version('llm-council-core') == llm_council.__version__ == '0.53.0+eng18.1'"
+          if ($LASTEXITCODE -ne 0) { throw 'Patched native engine identity mismatch' }
           uv pip install --python .venv/Scripts/python.exe pyinstaller==6.16.0 pystray==0.19.5 pillow==11.3.0
           if ($LASTEXITCODE -ne 0) { throw 'PyInstaller install failed' }
 
