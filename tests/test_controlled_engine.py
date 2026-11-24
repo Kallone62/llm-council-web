@@ -1167,3 +1167,133 @@ def test_eng09_empty_chairman_and_followup(provider_http, tmp_path, monkeypatch,
                              + "\n\nCurrent user question for this Council round:\n" + questions[2])
         assert [prompt for r, prompt in effective if r == 2] == [expected_followup] * 3
     assert council._get_chairman_model() == FREE_CHAIRMAN
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["rest", "sse"])
+def test_eng11_inflight_free_settings_are_isolated(provider_http, tmp_path, monkeypatch, stream):
+    """A live native Free round must not consume settings changed halfway through.
+
+    Only the provider's actual HTTP transport is paused; the FastAPI route,
+    native three-stage engine, settings persistence and SSE are all real.
+    """
+    from backend import main, storage
+    from backend import config as app_config
+
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+    assert main.run_full_council is council.run_full_council
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_handle = httpx.AsyncHTTPTransport.handle_async_request
+
+    async def pause_first_provider_request(self, outgoing):
+        payload = json.loads(outgoing.content)
+        if (payload["messages"][-1]["content"] == QUESTION
+                and not entered.is_set()):
+            entered.set()
+            await release.wait()
+        return await original_handle(self, outgoing)
+
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport, "handle_async_request", pause_first_provider_request
+    )
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test"
+        ) as client:
+            free = await client.put("/api/settings", json={"profile": "free"})
+            assert free.status_code == 200, free.text
+            assert free.json()["profile"] == "free"
+            before_yaml = app_config.get_council_config_path().read_bytes()
+            before_key = os.environ["OPENROUTER_API_KEY"]
+            created = (await client.post("/api/conversations", json={})).json()
+            cid = created["id"]
+            endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
+            task = asyncio.create_task(client.post(endpoint, json={"content": QUESTION}))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=10)
+                assert not task.done(), "Council must still be waiting on native Stage 1 HTTP"
+                for change in (
+                    {"profile": "quick"},
+                    {"profile": "free", "timeout_multiplier": 2.0},
+                ):
+                    blocked = await client.put("/api/settings", json=change)
+                    assert blocked.status_code == 409, blocked.text
+                blocked_key = await client.put(
+                    "/api/settings/openrouter-key",
+                    json={"api_key": "eng11-forbidden-inflight-key"},
+                )
+                assert blocked_key.status_code == 409, blocked_key.text
+                current = await client.get("/api/settings")
+                assert current.status_code == 200 and current.json()["profile"] == "free"
+                assert current.json()["timeout_multiplier"] == 1.0
+                assert app_config.get_council_config_path().read_bytes() == before_yaml
+                assert os.environ["OPENROUTER_API_KEY"] == before_key
+            finally:
+                # Never strand the native HTTP coroutine, even on a red test.
+                release.set()
+
+            response = await asyncio.wait_for(task, timeout=30)
+            assert response.status_code == 200, response.text
+            if stream:
+                events = [
+                    json.loads(line[6:]) for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                assert [event["type"] for event in events[-4:]] == [
+                    "stage1_complete", "stage2_complete", "stage3_complete", "complete"
+                ]
+                stage1, stage2, stage3 = [event["data"] for event in events[-4:-1]]
+                metadata = events[-1]["metadata"]
+                progress = [event["data"] for event in events if event["type"] == "engine_progress"]
+                assert_progress(progress)
+                assert metadata["ui_runtime_progress"] == progress
+            else:
+                payload = response.json()
+                stage1, stage2, stage3, metadata = (
+                    payload[field] for field in ("stage1", "stage2", "stage3", "metadata")
+                )
+            assert_round(stage1, stage2, stage3, metadata, provider_http)
+            assert metadata["usage"]["total"]["cost_usd"] == 0
+            assert metadata["peer_review"]["effective_votes"] == 6
+            persisted = json.loads(
+                (tmp_path / "conversations" / f"{cid}.json").read_text(encoding="utf-8")
+            )
+            assert persisted["messages"] == [
+                {"role": "user", "content": QUESTION},
+                {"role": "assistant", "stage1": stage1, "stage2": stage2,
+                 "stage3": stage3, "metadata": metadata},
+            ]
+            reloaded = await client.get(f"/api/conversations/{cid}")
+            assert reloaded.json()["messages"] == persisted["messages"]
+
+            # Once the old round ends, settings must be writable again.
+            quick = await client.put("/api/settings", json={"profile": "quick"})
+            assert quick.status_code == 200, quick.text
+            assert quick.json()["profile"] == "quick"
+            assert get_config().tiers.default == "quick"
+            free_again = await client.put(
+                "/api/settings", json={"profile": "free", "timeout_multiplier": 1.5}
+            )
+            assert free_again.status_code == 200, free_again.text
+            assert free_again.json()["profile"] == "free"
+            assert get_config().timeouts.multiplier == 1.5
+
+            # A subsequent actual Council round uses the newly saved profile
+            # settings, never reuses a paid/native model from the interim tier.
+            second_id = (await client.post("/api/conversations", json={})).json()["id"]
+            second = await client.post(
+                f"/api/conversations/{second_id}/message", json={"content": QUESTION}
+            )
+            assert second.status_code == 200, second.text
+            second_payload = second.json()
+            assert_round(
+                *(second_payload[k] for k in ("stage1", "stage2", "stage3", "metadata")),
+                provider_http[7:],
+            )
+            assert len(provider_http) == 14
+            second_disk = json.loads(
+                (tmp_path / "conversations" / f"{second_id}.json").read_text(encoding="utf-8")
+            )
+            assert second_disk["messages"][-1]["metadata"] == second_payload["metadata"]
+
+    asyncio.run(exercise())
