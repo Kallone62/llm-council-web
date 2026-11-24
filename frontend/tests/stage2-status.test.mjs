@@ -7,10 +7,12 @@ import { createServer } from 'vite';
 let server;
 let Stage2;
 let Stage3;
+let ChatInterface;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   Stage2 = (await server.ssrLoadModule('/src/components/Stage2.jsx')).default;
   Stage3 = (await server.ssrLoadModule('/src/components/Stage3.jsx')).default;
+  ChatInterface = (await server.ssrLoadModule('/src/components/ChatInterface.jsx')).default;
 });
 after(async () => { await server?.close(); });
 
@@ -59,4 +61,30 @@ test('Chairman verdict is explicitly limited when peer review failed', () => {
   }));
   assert.match(html, /not fully peer-validated/);
   assert.match(html, /Synthesis/);
+});
+
+
+const renderCouncil = (count, config) => renderToStaticMarkup(createElement(ChatInterface, {
+  conversation: { messages: [{
+    role: 'assistant',
+    stage1: Array.from({ length: count }, (_, i) => ({ model: 'provider/model-' + i, response: 'Individual answer' })),
+    stage3: { model: 'provider/chairman', response: 'Usable synthesis' },
+    metadata: { config, status: count === 2 ? 'partial' : undefined },
+  }] },
+  isLoading: false,
+}));
+
+test('reduced council shows the actual response shortfall and keeps synthesis', () => {
+  const html = renderCouncil(2, { council_size: 3, responses_received: 2 });
+  assert.match(html, /Partial Council result:/);
+  assert.match(html, /2 of 3 configured models returned an individual response/);
+  assert.match(html, /Usable synthesis/);
+});
+
+test('full council has no reduced-council warning', () => {
+  assert.doesNotMatch(renderCouncil(3, { council_size: 3, responses_received: 3 }), /Partial Council result:/);
+});
+
+test('legacy council without a configured size has no invented shortfall', () => {
+  assert.doesNotMatch(renderCouncil(2, undefined), /Partial Council result:/);
 });

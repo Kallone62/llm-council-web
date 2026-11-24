@@ -25,7 +25,7 @@ USAGE = {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18, "cost"
 
 
 @pytest.fixture
-def provider_http(tmp_path, monkeypatch):
+def provider_http(tmp_path, monkeypatch, request):
     """Fresh real engine config; intercept only actual outgoing HTTP requests."""
     # No local API secrets, ambient config overrides, proxies or telemetry.
     for name in tuple(os.environ):
@@ -49,6 +49,12 @@ def provider_http(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_COUNCIL_CONFIG", str(config_path))
     reload_config()
     calls = []
+    failed_model = getattr(request, "param", None)
+    available = {model: answer for model, answer in ANSWERS.items() if model != failed_model}
+    labels = LABELS[:len(available)]
+    review_text = REVIEW_TEXT if failed_model is None else "All candidates address preservation.\n```json\n" + json.dumps({
+        "ranking": labels, "scores": dict(zip(labels, [9, 8, 7])),
+    }) + "\n```"
 
     def reply(request):
         assert request.method == "POST"
@@ -63,16 +69,23 @@ def provider_http(tmp_path, monkeypatch):
         if prompt == QUESTION:
             stage, content = "stage1", ANSWERS[model]
         elif "<responses_to_evaluate>" in prompt:
-            stage, content = "stage2", REVIEW_TEXT
-            assert QUESTION in prompt and all(answer in prompt for answer in ANSWERS.values())
+            stage, content = "stage2", review_text
+            assert QUESTION in prompt and all(answer in prompt for answer in available.values())
+            if failed_model is not None:
+                assert ANSWERS[failed_model] not in prompt
         elif prompt.startswith("You are the Chairman of an LLM Council."):
             stage, content = "stage3", FINAL_TEXT
             assert model == FREE_CHAIRMAN
-            assert QUESTION in prompt and all(answer in prompt for answer in ANSWERS.values())
-            chairman_context_matches = "AGGREGATE RANKINGS" in prompt and REVIEW_TEXT in prompt
+            assert QUESTION in prompt and all(answer in prompt for answer in available.values())
+            if failed_model is not None:
+                assert ANSWERS[failed_model] not in prompt
+            chairman_context_matches = "AGGREGATE RANKINGS" in prompt and review_text in prompt
         else:
             pytest.fail("Unexpected provider prompt (no credentials or prompt text logged)")
         # Record no credentials or raw prompts. Native HTTP client parses the response.
+        if model == failed_model:
+            calls.append((stage, model, request.url.host, 404, chairman_context_matches))
+            return httpx.Response(404, json={"error": {"code": 404, "message": "No endpoints found for this model"}})
         calls.append((stage, model, request.url.host, 200, chairman_context_matches))
         return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": content}}], "usage": USAGE})
 
@@ -204,3 +217,72 @@ def test_eng01_actual_api_and_disk(provider_http, tmp_path, monkeypatch, stream)
         ]
         reloaded = client.get(f"/api/conversations/{cid}")
         assert reloaded.status_code == 200 and reloaded.json()["messages"] == persisted["messages"]
+
+
+@pytest.mark.parametrize("provider_http", [FREE_MODELS[-1]], indirect=True)
+@pytest.mark.parametrize("stream", [False, True], ids=["rest", "sse"])
+def test_eng02_single_unavailable_model(provider_http, tmp_path, monkeypatch, stream):
+    """A real 404 at the HTTP boundary must leave an explicitly partial round."""
+    from fastapi.testclient import TestClient
+    from backend import main, storage
+
+    failed_model = FREE_MODELS[-1]
+    available = {model: answer for model, answer in ANSWERS.items() if model != failed_model}
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+    assert main.run_full_council is council.run_full_council
+    with TestClient(main.app) as client:
+        created = client.post("/api/conversations", json={})
+        assert created.status_code == 200
+        cid = created.json()["id"]
+        endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
+        result = client.post(endpoint, json={"content": QUESTION})
+        assert result.status_code == 200, result.text
+        if stream:
+            assert result.headers["content-type"].startswith("text/event-stream")
+            events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+            assert [e["type"] for e in events] == ["engine_progress"] * 8 + [
+                "stage1_complete", "stage2_complete", "stage3_complete", "complete"]
+            progress = [e["data"] for e in events[:8]]
+            assert [(e["stage"], e["state"]) for e in progress] == [
+                (stage, state) for stage in ("stage1", "stage1_5", "stage2", "stage3")
+                for state in ("started", "completed")]
+            assert progress[1]["responses"] == 2
+            assert progress[5]["valid_reviews"] == 2 and progress[5]["reviews"] == 2
+            stage1, stage2, stage3 = [e["data"] for e in events[8:11]]
+            metadata = events[11]["metadata"]
+            assert events[9]["metadata"] == events[10]["metadata"] == metadata
+            assert metadata["ui_runtime_progress"] == progress
+        else:
+            payload = result.json()
+            stage1, stage2, stage3, metadata = [payload[key] for key in ("stage1", "stage2", "stage3", "metadata")]
+        assert Counter((stage, model, code) for stage, model, _, code, _ in provider_http) == Counter(
+            [(stage, model, 404 if model == failed_model else 200)
+             for stage in ("stage1", "stage2") for model in FREE_MODELS]
+            + [("stage3", FREE_CHAIRMAN, 200)])
+        assert [stage for stage, *_ in provider_http] == ["stage1"] * 3 + ["stage2"] * 3 + ["stage3"]
+        assert all(host == "openrouter.ai" for _, _, host, _, _ in provider_http)
+        assert len(stage1) == 2 and {r["model"]: r["response"] for r in stage1} == available
+        assert len(stage2) == 2 and {r["model"] for r in stage2} == set(available)
+        assert all(r["parsed_ranking"]["ranking"] == LABELS[:2] for r in stage2)
+        assert {item["model"] for item in metadata["label_to_model"].values()} == set(available)
+        assert len(metadata["aggregate_rankings"]) == 2
+        assert {r["model"] for r in metadata["aggregate_rankings"]} == set(available)
+        assert all(r["vote_count"] == 1 for r in metadata["aggregate_rankings"])
+        assert stage3["model"] == FREE_CHAIRMAN and stage3["response"] == FINAL_TEXT
+        assert not stage3.get("error_status")
+        assert metadata["degraded_mode"] == "two_models"
+        assert metadata["config"]["council_size"] == 3
+        assert metadata["config"]["responses_received"] == 2
+        assert metadata["peer_review"]["state"] == "completed"
+        assert metadata["peer_review"]["effective_votes"] == 2
+        assert metadata["usage"]["total"]["total_tokens"] == 5 * USAGE["total_tokens"]
+        assert metadata["usage"]["total"]["cost_usd"] == 0
+        assert [context for stage, *_, context in provider_http if stage == "stage3"] == [True]
+        persisted = json.loads((tmp_path / "conversations" / f"{cid}.json").read_text(encoding="utf-8"))
+        assert persisted["messages"] == [
+            {"role": "user", "content": QUESTION},
+            {"role": "assistant", "stage1": stage1, "stage2": stage2, "stage3": stage3, "metadata": metadata},
+        ]
+        reloaded = client.get(f"/api/conversations/{cid}")
+        assert reloaded.status_code == 200 and reloaded.json()["messages"] == persisted["messages"]
+        assert metadata.get("status") == "partial"

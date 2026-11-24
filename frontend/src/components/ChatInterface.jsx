@@ -153,6 +153,14 @@ export default function ChatInterface({
                       <span>Running Stage 1: Collecting individual responses...</span>
                     </div>
                   )}
+                  {msg.stage1?.length > 0 &&
+                    Number.isInteger(msg.metadata?.config?.council_size) &&
+                    msg.stage1.length < msg.metadata.config.council_size && (
+                      <div className="engine-progress" role="status">
+                        <strong>Partial Council result:</strong>{' '}
+                        {msg.stage1.length} of {msg.metadata.config.council_size} configured models returned an individual response.
+                      </div>
+                    )}
                   {msg.stage1 && <Stage1 responses={msg.stage1} />}
 
                   {msg.loading?.stage2 && (
