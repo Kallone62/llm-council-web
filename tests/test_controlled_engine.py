@@ -542,3 +542,56 @@ def test_eng04_round_state_is_reset_in_same_task(provider_http):
         assert not engine_runtime._free_chairman_retry.get()
 
     asyncio.run(drive())
+
+
+
+def test_eng04_cancel_stage1_closes_all_provider_requests(provider_http, monkeypatch):
+    """The Free status adapter must preserve cancellation of in-flight native HTTP calls."""
+    from backend import main
+
+    async def drive():
+        active = set()
+        cancelled = set()
+        tasks = []
+        all_started = asyncio.Event()
+        all_cancelled = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked(_transport, request):
+            assert request.method == "POST"
+            assert str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
+            model = json.loads(request.content)["model"]
+            assert model in FREE_MODELS
+            assert model not in active
+            active.add(model)
+            tasks.append(asyncio.current_task())
+            if active == set(FREE_MODELS):
+                all_started.set()
+            try:
+                await release.wait()
+                pytest.fail("Cancelled HTTP call should not finish normally")
+            except asyncio.CancelledError:
+                cancelled.add(model)
+                if cancelled == set(FREE_MODELS):
+                    all_cancelled.set()
+                raise
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
+        task = asyncio.create_task(main._run_council_with_free_chairman_recovery(QUESTION, free_mode=True))
+        try:
+            await asyncio.wait_for(all_started.wait(), 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.wait_for(all_cancelled.wait(), 1)
+            assert cancelled == set(FREE_MODELS)
+        finally:
+            # Even a failing regression must not leave tasks running in the suite.
+            for child in tasks:
+                child.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(drive())

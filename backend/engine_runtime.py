@@ -14,6 +14,8 @@ from typing import Any, Awaitable, Callable, Optional
 
 import llm_council.council as council
 from llm_council.council_stages import early_consensus_enabled
+from llm_council.council_usage import _add_cost_to_usage
+from llm_council.gateway_adapter import STATUS_OK, STATUS_RATE_LIMITED, query_model_with_status
 from llm_council.quality.integration import calculate_quality_metrics
 
 from .free_profile import FREE_MODELS
@@ -237,26 +239,50 @@ def _peer_metrics_unavailable(review: dict) -> bool:
     )
 
 
+async def _collect_free_stage1(user_query: str) -> tuple:
+    """Preserve native HTTP status with the compatibility path's cancellation semantics.
+
+    Amiable 0.53.0's status-aware Stage 1 uses as_completed without cancelling
+    its direct HTTP tasks when the round is cancelled. Use the same native
+    gateway/status client and usage helper, but own the task lifetime here.
+    Only the Free adapter's collection/projection is local; deliberation,
+    ranking, synthesis and model request construction stay in the engine.
+    """
+    models = list(council._get_council_models())
+    messages = [{"role": "user", "content": user_query}]
+    tasks = [asyncio.create_task(query_model_with_status(model, messages, timeout=120.0))
+             for model in models]
+    try:
+        statuses = await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    responses = []
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    limits = {}
+    for model, status in zip(models, statuses):
+        if status["status"] == STATUS_RATE_LIMITED:
+            limits[model] = status.get("retry_after")
+        if status["status"] == STATUS_OK:
+            responses.append({"model": model, "response": status.get("content") or ""})
+            model_usage = status.get("usage", {})
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                usage[key] += model_usage.get(key, 0)
+            _add_cost_to_usage(usage, model_usage, model=model)
+    _stage1_rate_limits.set(limits)
+    return responses, usage
+
+
 def wrap_stage(stage: str, original: Callable) -> Callable:
     """Transparent async decorator, also independently testable offline."""
     async def wrapped(*args, **kwargs):
         await emit_progress(stage, "started")
         try:
             if stage == "stage1" and _free_chairman_retry.get():
-                # The native compatibility Stage 1 discards provider status.
-                # Use Amiable's status-aware Stage 1 with the same 120s model
-                # timeout and configured ordering; keep its native results/usage.
-                models = list(council._get_council_models())
-                responses, usage, statuses = await council.stage1_collect_responses_with_status(
-                    *args, timeout=120.0, models=models, **kwargs,
-                )
-                positions = {model: index for index, model in enumerate(models)}
-                responses.sort(key=lambda item: positions[item["model"]])
-                _stage1_rate_limits.set({
-                    model: status.get("retry_after") for model, status in statuses.items()
-                    if status.get("status") == "rate_limited"
-                })
-                result = responses, usage
+                result = await _collect_free_stage1(*args, **kwargs)
             elif stage == "stage2" and _free_chairman_retry.get():
                 models = kwargs.get("models")
                 if models is None:
