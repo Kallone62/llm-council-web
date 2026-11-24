@@ -11,7 +11,7 @@ dependencies = [
     "httpx==0.28.1",
     "pydantic==2.13.5",
     "pyyaml==6.0.3",
-    "llm-council-core @ https://github.com/Kallone62/llm-council-web/archive/13714448e2d0d37bd4faa57d1ed89f5d7021efe3.tar.gz",
+    "llm-council-core @ https://github.com/Kallone62/llm-council-web/archive/72556ca5fd742f236fbdc5ffd5a19c8d6212495b.tar.gz",
 ]
 
 [project.optional-dependencies]

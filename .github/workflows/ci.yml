@@ -22,7 +22,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Verify exact patched native engine package
-        run: .venv/bin/python -c "from importlib.metadata import version; import llm_council; assert version('llm-council-core') == llm_council.__version__ == '0.53.0+eng23.1'"
+        run: .venv/bin/python -c "from importlib.metadata import version; import llm_council; assert version('llm-council-core') == llm_council.__version__ == '0.53.0+eng27.1'"
 
       - name: Run backend unit and regression tests
         run: .venv/bin/python -m pytest -q --ignore=tests/test_controlled_engine.py --ignore=tests/test_controlled_memory.py --ignore=tests/test_controlled_concurrency.py --ignore=tests/test_controlled_profiles.py --ignore=tests/test_controlled_verdict.py --ignore=tests/test_controlled_synthesis_mode.py --ignore=tests/test_controlled_normalization.py --ignore=tests/test_controlled_self_votes.py --ignore=tests/test_controlled_gateway_fallback.py --ignore=tests/test_gateway_policy_edges.py --ignore=tests/test_controlled_gateway_app_edges.py --ignore=tests/test_controlled_quality.py --ignore=tests/test_controlled_rubric.py --ignore=tests/test_controlled_safety.py --ignore=tests/test_controlled_bias.py --ignore=tests/test_controlled_usage.py --ignore=tests/test_controlled_free_endpoint.py --ignore=tests/test_controlled_free_catalog.py --ignore=tests/test_controlled_tier_scope.py

@@ -1,4 +1,5 @@
 """Compare identical native ballots with self-vote exclusion enabled and disabled."""
+import asyncio
 import json
 import re
 from collections import Counter
@@ -14,6 +15,8 @@ from test_controlled_profiles import (
     KEY, PROFILES, TITLE, TITLE_MODEL, decode_response, deny_external_network,
     isolated_profile_config,
 )
+
+from test_controlled_tier_scope import configure
 
 MODELS, CHAIRMAN, _, _ = PROFILES["high"]
 A, B, C, D = MODELS
@@ -64,8 +67,7 @@ def install_ballot_provider(monkeypatch, exclude):
             assert model == CHAIRMAN and prompt.startswith("You are the Chairman of an LLM Council.")
             assert all(value in prompt for value in ANSWERS.values())
             assert all(raw in prompt for _, raw in reviews.values())
-            # The native 0.53.0 heading is unconditional. Verify the actual
-            # ranked rows (not that misleading caption) independently.
+            # Check ranked rows independently of the heading.
             assert "AGGREGATE RANKINGS" in prompt
             rows = "\n".join(f"  #{i}. {m} (avg score: {EXPECTED[exclude][m][2]}, votes: {3 if exclude else 4})"
                              for i, m in enumerate(ORDER[exclude], 1))
@@ -77,6 +79,22 @@ def install_ballot_provider(monkeypatch, exclude):
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
     return calls, label_map, reviews, prompts
+
+
+def expected_rankings(exclude):
+    return [
+        {"model": model, "borda_score": EXPECTED[exclude][model][0],
+         "average_position": EXPECTED[exclude][model][1], "average_score": EXPECTED[exclude][model][2],
+         "vote_count": 3 if exclude else 4, "self_votes_excluded": exclude, "rank": rank}
+        for rank, model in enumerate(ORDER[exclude], 1)]
+
+
+def assert_heading(prompt, heading):
+    assert [line for line in prompt.splitlines() if line.startswith("AGGREGATE RANKINGS")] == [heading]
+
+
+HEADINGS = {True: "AGGREGATE RANKINGS (after excluding self-votes):",
+            False: "AGGREGATE RANKINGS (including self-votes):"}
 
 
 def assert_aggregation(payload, exclude, mapping, reviews):
@@ -91,11 +109,7 @@ def assert_aggregation(payload, exclude, mapping, reviews):
         parsed = result["parsed_ranking"]
         assert parsed["ranking"] == ballot["ranking"] and parsed["scores"] == ballot["scores"]
         assert tuple(mapping[label] for label in parsed["ranking"]) == BALLOTS[result["model"]]
-    assert metadata["aggregate_rankings"] == [
-        {"model": model, "borda_score": EXPECTED[exclude][model][0],
-         "average_position": EXPECTED[exclude][model][1], "average_score": EXPECTED[exclude][model][2],
-         "vote_count": 3 if exclude else 4, "self_votes_excluded": exclude, "rank": rank}
-        for rank, model in enumerate(ORDER[exclude], 1)]
+    assert metadata["aggregate_rankings"] == expected_rankings(exclude)
     assert metadata["peer_review"] == {"state": "completed", "reviews": 4, "valid_reviews": 4,
         "partial_reviews": 0, "invalid_reviews": 0, "abstained_reviews": 0,
         "effective_votes": 12 if exclude else 16, "ranked_candidates": 4}
@@ -126,6 +140,7 @@ def test_native_self_vote_switch(isolated_profile_config, monkeypatch, modes, st
             endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
             payload = decode_response(client.post(endpoint, json={"content": QUESTION}), stream)
             assert len(prompts) == 1
+            assert_heading(prompts[0], HEADINGS[exclude])
             assert Counter(calls) == Counter([("title", TITLE_MODEL), ("stage3", CHAIRMAN)] + [
                 (stage, model) for stage in ("stage1", "stage2") for model in MODELS])
             assert len(payload["stage1"]) == 4 and {r["model"]: r["response"] for r in payload["stage1"]} == ANSWERS
@@ -137,3 +152,44 @@ def test_native_self_vote_switch(isolated_profile_config, monkeypatch, modes, st
             for record_id, record in completed.items():
                 assert storage.get_conversation(record_id) == record
                 assert client.get(f"/api/conversations/{record_id}").json() == record
+
+
+@pytest.mark.parametrize("exclude", [True, False])
+def test_native_chairman_heading(tmp_path, monkeypatch, exclude):
+    configure(tmp_path, monkeypatch, "high", False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
+    path = tmp_path / "tier.yaml"
+    settings = yaml.safe_load(path.read_text(encoding="utf-8"))
+    settings["council"]["exclude_self_votes"] = exclude
+    path.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    reload_config()
+    calls, _, _, prompts = install_ballot_provider(monkeypatch, exclude)
+    stage1, stage2, stage3, metadata = asyncio.run(council.run_full_council(QUESTION, bypass_cache=True))
+    assert len(stage1) == len(stage2) == 4
+    assert metadata["config"]["exclude_self_votes"] is exclude
+    assert metadata["aggregate_rankings"] == expected_rankings(exclude)
+    assert stage3 == {"model": CHAIRMAN, "response": FINAL[exclude]}
+    assert Counter(calls) == Counter([("stage3", CHAIRMAN)] + [
+        (stage, model) for stage in ("stage1", "stage2") for model in MODELS])
+    assert len(prompts) == 1
+    assert_heading(prompts[0], HEADINGS[exclude])
+
+
+@pytest.mark.parametrize("flags", [(None, True), (False, True), (1, True)],
+                         ids=["missing", "mixed", "non-boolean"])
+def test_native_chairman_heading_unknown(tmp_path, monkeypatch, flags):
+    configure(tmp_path, monkeypatch, "high", False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
+    reload_config()
+    rows = expected_rankings(True)
+    if flags[0] is None:
+        rows[0].pop("self_votes_excluded")
+    else:
+        rows[0]["self_votes_excluded"] = flags[0]
+    rows[1]["self_votes_excluded"] = flags[1]
+    calls, _, _, prompts = install_ballot_provider(monkeypatch, True)
+    stage1 = [{"model": model, "response": ANSWERS[model]} for model in MODELS]
+    result, _, _ = asyncio.run(council.stage3_synthesize_final(QUESTION, stage1, [], rows))
+    assert result == {"model": CHAIRMAN, "response": FINAL[True]}
+    assert calls == [("stage3", CHAIRMAN)] and len(prompts) == 1
+    assert_heading(prompts[0], "AGGREGATE RANKINGS:")
