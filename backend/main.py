@@ -477,7 +477,7 @@ async def _run_council_with_free_chairman_recovery(query: str, *, free_mode: boo
                     "No Council models returned a usable response. All Free models were "
                     "rate-limited; this may be an account-wide limit. Please wait and try again."
                 )
-        if stage3.get("error_status") == "rate_limited":
+        if stage3.get("error_status"):
             metadata["status"] = "failed"
             metadata.pop("verdict", None)
         # Native compatibility API reports council size and usable responses,
