@@ -12,6 +12,7 @@ on:
       - scripts/windows/assert-smoke-settings.ps1
       - tests/windows/test-smoke-settings.ps1
       - tests/windows/test-smoke-settings-mutation.ps1
+      - tests/test_storage_integrity.py
       - .github/workflows/windows-release.yml
       - llm_council.yaml
   workflow_dispatch:
@@ -80,10 +81,16 @@ jobs:
       - name: Install pinned engine and PyInstaller
         shell: pwsh
         run: |
-          uv sync
+          uv sync --extra dev
           if ($LASTEXITCODE -ne 0) { throw 'uv sync failed' }
           uv pip install --python .venv/Scripts/python.exe pyinstaller==6.16.0 pystray==0.19.5 pillow==11.3.0
           if ($LASTEXITCODE -ne 0) { throw 'PyInstaller install failed' }
+
+      - name: Regression-test conversation storage on Windows
+        shell: pwsh
+        run: |
+          .venv/Scripts/python.exe -m pytest -q tests/test_storage_integrity.py
+          if ($LASTEXITCODE -ne 0) { throw 'Conversation storage regression failed' }
 
       - name: Build Windows desktop EXE with native engine and original logo
         shell: pwsh
