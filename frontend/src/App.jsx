@@ -222,7 +222,6 @@ function App() {
             loadConversations();
             break;
           case 'complete':
-            completed = true;
             loadConversations();
             break;
           case 'error':
@@ -239,6 +238,8 @@ function App() {
             console.log('Unknown event type:', eventType);
         }
       }, options);
+      // Only a validated, fully consumed stream permits a success reload.
+      completed = true;
     } catch (error) {
       console.error('Failed to send message:', error);
       updateSentConversation((prev) => {
