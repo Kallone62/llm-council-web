@@ -16,8 +16,8 @@ from llm_council.openrouter import query_model
 SUMMARY_MODEL = "google/gemini-2.5-flash"
 MAX_HISTORY_CHARS = 6000
 MAX_SUMMARY_CHARS = 4000
-# Older summaries may include failed Chairman responses and invalid turn offsets.
-MEMORY_VERSION = 2
+# Older summaries may include native legacy error text and invalid turn offsets.
+MEMORY_VERSION = 3
 
 ProgressCallback = Callable[[str], Awaitable[None]]
 
@@ -40,6 +40,9 @@ def _completed_exchanges(messages: Sequence[Mapping[str, Any]]) -> list[Tuple[st
             if (
                 question and isinstance(answer, str) and answer.strip()
                 and not stage3.get("error_status")
+                # Match the legacy native error sentinels recognized by Stage3.jsx.
+                and not answer.lower().startswith("error: unable to generate final synthesis")
+                and not (stage3.get("model") == "error" and "all models failed to respond" in answer.lower())
             ):
                 complete.append((question, answer))
             question = None
