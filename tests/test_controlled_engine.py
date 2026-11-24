@@ -938,3 +938,130 @@ def test_eng07_actual_peer_review(provider_http, request, tmp_path, monkeypatch,
         ]
         reloaded = client.get(f"/api/conversations/{cid}")
         assert reloaded.status_code == 200 and reloaded.json()["messages"] == persisted["messages"]
+
+
+@pytest.mark.parametrize("chair_codes", [(401,), (402,), (404, 503, 429), (429, 404, 200)],
+                         ids=["auth", "billing", "exhausted", "recovered"])
+@pytest.mark.parametrize("stream", [False, True], ids=["rest", "sse"])
+def test_eng08_chairman_failure_and_followup(provider_http, tmp_path, monkeypatch, stream, chair_codes):
+    """A failed synthesis is saved for inspection, never fed back as a decision."""
+    from fastapi.testclient import TestClient
+    from backend import main, storage
+
+    questions = ["ENG-08 prior: keep the blue backup.", "ENG-08 target: evaluate the red backup.",
+                 "ENG-08 followup: what should we retain?"]
+    prior_answer = "Confirmed prior decision: retain BLUE_BACKUP."
+    recovered_answer = json.dumps({"verdict": "approved", "confidence": 0.8, "rationale": "Recovered RED_BACKUP decision."})
+    followup_answer = "Followup answer based on completed decisions."
+    recovered = chair_codes[-1] == 200
+    round_index = 0
+    calls = []
+    effective = []
+    chairman_prompts = []
+    monkeypatch.setenv("LLM_COUNCIL_QUALITY_METRICS", "true")
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+
+    def reply(request):
+        assert request.method == "POST" and str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
+        assert request.headers.get("authorization") == "Bearer eng-01-test-only-not-a-real-key"
+        body = json.loads(request.content)
+        model = body["model"]
+        assert model in FREE_MODELS
+        prompt = body["messages"][-1]["content"]
+        assert questions[round_index] in prompt
+        if "<responses_to_evaluate>" in prompt:
+            stage, content = "stage2", REVIEW_TEXT
+            assert all(answer in prompt for answer in ANSWERS.values())
+        elif prompt.startswith("You are the Chairman"):
+            stage = "stage3"
+            content = (prior_answer, recovered_answer, followup_answer)[round_index]
+            assert "AGGREGATE RANKINGS" in prompt and REVIEW_TEXT in prompt
+            chairman_prompts.append((round_index, prompt))
+        else:
+            stage, content = "stage1", ANSWERS[model]
+            effective.append((round_index, prompt))
+        code = 200
+        if round_index == 1 and stage == "stage3":
+            attempt = sum(r == 1 and s == "stage3" for r, s, _, _ in calls)
+            assert attempt < len(chair_codes)
+            code = chair_codes[attempt]
+        calls.append((round_index, stage, model, code))
+        if code != 200:
+            return httpx.Response(code, json={"error": {"code": code, "message": "ENG08_PROVIDER_FAILURE"}},
+                                  headers={"Retry-After": "120"} if code == 429 else {})
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": content}}], "usage": USAGE})
+
+    transport = httpx.MockTransport(reply)
+
+    async def handle(_self, request):
+        return await transport.handle_async_request(request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
+    assert main.run_full_council is council.run_full_council
+    with TestClient(main.app) as client:
+        created = client.post("/api/conversations", json={})
+        assert created.status_code == 200
+        cid = created.json()["id"]
+        endpoint = f"/api/conversations/{cid}/message" + ("/stream" if stream else "")
+        saved = []
+        failed_answer = None
+        for round_index, question in enumerate(questions):
+            result = client.post(endpoint, json={"content": question, "verdict_type": "binary" if round_index == 1 else "synthesis"})
+            assert result.status_code == 200, result.text
+            if stream:
+                assert result.headers["content-type"].startswith("text/event-stream")
+                events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+                assert [e["type"] for e in events[-4:]] == ["stage1_complete", "stage2_complete", "stage3_complete", "complete"]
+                assert all(e["type"] == "engine_progress" for e in events[:-4])
+                progress = [e["data"] for e in events[:-4]]
+                stage1, stage2, stage3 = [e["data"] for e in events[-4:-1]]
+                metadata = events[-1]["metadata"]
+                assert events[-3]["metadata"] == events[-2]["metadata"] == metadata
+                assert metadata["ui_runtime_progress"] == progress
+                assert progress[-1]["stage"] == "stage3"
+                assert progress[-1]["state"] == ("failed" if round_index == 1 and not recovered else "completed")
+                assert sum(e["state"] == "retrying" for e in progress) == (len(chair_codes) - 1 if round_index == 1 else 0)
+            else:
+                payload = result.json()
+                stage1, stage2, stage3, metadata = [payload[key] for key in ("stage1", "stage2", "stage3", "metadata")]
+            expected_codes = chair_codes if round_index == 1 else (200,)
+            expected = [(s, model, 200) for s in ("stage1", "stage2") for model in FREE_MODELS]
+            expected += [("stage3", model, code) for model, code in zip(FREE_MODELS, expected_codes)]
+            observed = [(s, model, code) for r, s, model, code in calls if r == round_index]
+            assert Counter(observed) == Counter(expected)
+            assert [s for s, *_ in observed] == [s for s, *_ in expected]
+            assert {r["model"]: r["response"] for r in stage1} == ANSWERS
+            assert len(stage2) == 3 and all(r["parsed_ranking"]["ranking"] == LABELS for r in stage2)
+            assert metadata["peer_review"]["state"] == "completed" and metadata["peer_review"]["effective_votes"] == 6
+            assert metadata["usage"]["total"]["total_tokens"] == sum(code == 200 for _, _, code in expected) * USAGE["total_tokens"]
+            if round_index == 1 and not recovered:
+                assert stage3.get("error_status") and metadata["status"] == "failed"
+                assert not metadata.get("verdict") and metadata.get("quality_metrics") is None
+                assert stage3["model"] == FREE_MODELS[len(chair_codes) - 1]
+                failed_answer = stage3["response"]
+                if len(chair_codes) == 3:
+                    assert stage3["free_fallback_exhausted"] is True
+                else:
+                    assert not stage3.get("free_fallback_exhausted")
+            else:
+                assert not stage3.get("error_status") and metadata.get("status") not in ("failed", "partial")
+                assert stage3["response"] == (prior_answer, recovered_answer, followup_answer)[round_index]
+                assert metadata.get("quality_metrics") is not None
+                if round_index == 1:
+                    assert stage3["model"] == FREE_MODELS[-1]
+                    assert metadata["verdict"]["verdict"] == "approved"
+            saved += [{"role": "user", "content": question}, {"role": "assistant", "stage1": stage1, "stage2": stage2, "stage3": stage3, "metadata": metadata}]
+            persisted = json.loads((tmp_path / "conversations" / f"{cid}.json").read_text(encoding="utf-8"))
+            assert persisted["messages"] == saved and not persisted.get("context_memory")
+            reloaded = client.get(f"/api/conversations/{cid}")
+            assert reloaded.status_code == 200 and reloaded.json()["messages"] == saved
+        expected_history = [(questions[0], prior_answer)] + ([(questions[1], recovered_answer)] if recovered else [])
+        expected_followup = "Conversation background from prior completed Council rounds (not the current request):\n\n" + "\n\n".join(
+            "Previous user question: " + json.dumps(q) + "\nPrevious Council final answer: " + json.dumps(a)
+            for q, a in expected_history
+        ) + "\n\nCurrent user question for this Council round:\n" + questions[2]
+        assert [prompt for r, prompt in effective if r == 2] == [expected_followup] * 3
+        assert len({prompt for r, prompt in chairman_prompts if r == 1}) == 1
+        if failed_answer:
+            assert failed_answer not in expected_followup and questions[1] not in expected_followup
+    assert council._get_chairman_model() == FREE_CHAIRMAN
