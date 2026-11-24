@@ -208,6 +208,17 @@ saved setups are not migrated automatically; selecting Free in Settings
 changes the chosen profile. Changing back to paid profiles restores the
 corresponding native Amiable model pool.
 
+**Native profile scope:** the web app uses Amiable's compatibility
+`run_full_council()` three-stage pipeline for all four native profiles,
+not its separate `consult_council()` or structured verification entry point.
+The native presets select the model pool and Chairman; the timeout multiplier
+sets the Stage 2/3 per-request budget (with a 120-second floor). Stage 1
+retains its 120-second per-request default. The native consult/verification
+tier-wide deadline, fallback synthesis, verification screening and model-level
+progress are not supplied by this web integration. Quick still performs
+peer review here; Reasoning selects a reasoning-oriented pool, not a promise
+of tier-contract reasoning parameters or an enforced total deadline.
+
 **Stage 1 zero-response reporting:** when all models fail before peer
 review, the UI shows an explicit failure rather than a green Final Council
 Answer. **The request-status interception introduced in beta.5 has been
