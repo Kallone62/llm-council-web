@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from statistics import mean, stdev, median, variance
 from typing import Dict, List, Optional, Tuple, Any
 
-from .council_rankings import parsed_ranking_of
+from .council_rankings import _coerce_score, parsed_ranking_of
 
 from .unified_config import get_config
 
@@ -71,13 +71,13 @@ def _pearson_correlation(x: List[float], y: List[float]) -> Tuple[float, float]:
         return 0.0, 1.0
 
     # Pearson r
-    r = covariance / (std_x * std_y)
+    r = max(-1.0, min(1.0, covariance / (std_x * std_y)))
 
     # Approximate p-value using t-distribution approximation
     # t = r * sqrt(n-2) / sqrt(1-r^2)
     # For small n, use a rough approximation
     if abs(r) >= 1.0:
-        p = 0.0 if abs(r) == 1.0 else 1.0
+        p = 0.0
     else:
         t_stat = r * math.sqrt(n - 2) / math.sqrt(1 - r**2)
         # Rough p-value approximation (two-tailed)
@@ -375,7 +375,9 @@ def extract_scores_from_stage2(
             label_value = label_to_model.get(label)
             model = _get_model_from_label_value(label_value) if label_value else None
             if model:
-                reviewer_scores[model] = score
+                numeric_score = _coerce_score(score)
+                if math.isfinite(numeric_score):
+                    reviewer_scores[model] = numeric_score
 
         if reviewer:
             extracted[reviewer] = reviewer_scores
