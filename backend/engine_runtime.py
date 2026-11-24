@@ -41,6 +41,11 @@ _missing_reviewers: contextvars.ContextVar[tuple[str, ...]] = (
 )
 
 
+_all_reviews_missing: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "llm_council_web_all_reviews_missing", default=False
+)
+
+
 # Rate-limits can be account-wide; bounded rotation cannot bypass exhausted
 # quotas. Two short pauses only; do not rerun Stage 1 or Stage 2.
 FREE_CHAIRMAN_RETRY_PAUSE_SECONDS = 1.0
@@ -119,6 +124,18 @@ async def _run_free_stage3_with_fallback(original: Callable, *args, **kwargs):
     }]
     if not _retryable_free_chairman_failure(result):
         return result
+
+    # The compatibility review API cannot identify the HTTP cause of a
+    # missing review. With no replies from the full council and a confirmed
+    # Chairman 429, another model rotation is unlikely to help. Do not claim
+    # that the account quota is known to be exhausted.
+    if _all_reviews_missing.get() and result[0].get("error_status") == "rate_limited":
+        response, usage, verdict = result
+        return ({**response,
+                 "response": "No reviewers responded and the Free Chairman is rate-limited. "
+                             "This may be an account-wide limit. Please wait and try again. "
+                             "Individual responses are saved.",
+                 "free_fallback_suppressed": "all_reviews_missing"}, usage, verdict)
 
     for model in alternatives:
         await emit_progress("stage3", "retrying", model=model)
@@ -298,6 +315,9 @@ def wrap_stage(stage: str, original: Callable) -> Callable:
                 # The compatibility review API loses HTTP status. Only infer
                 # a missing review when every reviewer was actually selected;
                 # do not label it 429 or confuse intentional sampling with failure.
+                if full_review and not result[0]:
+                    candidates = {item["model"] for item in result[1].values()}
+                    _all_reviews_missing.set(bool(models) and set(models) == candidates)
                 if full_review and result[0]:
                     candidates = {item["model"] for item in result[1].values()}
                     received = {item["model"] for item in result[0]}
@@ -363,11 +383,12 @@ def install_stage_hooks() -> None:
 def watch_free_chairman_retry(enabled: bool):
     """Opt in only for a fully guarded Free-profile execution."""
     return (_free_chairman_retry.set(enabled), _stage1_rate_limits.set(None),
-            _missing_reviewers.set(()))
+            _missing_reviewers.set(()), _all_reviews_missing.set(False))
 
 
 def unwatch_free_chairman_retry(token) -> None:
-    enabled_token, limits_token, reviewers_token = token
+    enabled_token, limits_token, reviewers_token, all_missing_token = token
+    _all_reviews_missing.reset(all_missing_token)
     _missing_reviewers.reset(reviewers_token)
     _stage1_rate_limits.reset(limits_token)
     _free_chairman_retry.reset(enabled_token)

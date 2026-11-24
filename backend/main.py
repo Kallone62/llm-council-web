@@ -472,6 +472,14 @@ async def _run_council_with_free_chairman_recovery(query: str, *, free_mode: boo
         rate_limits = engine_runtime.stage1_rate_limits()
         if rate_limits:
             metadata["stage1_rate_limits"] = rate_limits
+            if not stage1 and set(rate_limits) == set(FREE_MODELS):
+                stage3["response"] = (
+                    "No Council models returned a usable response. All Free models were "
+                    "rate-limited; this may be an account-wide limit. Please wait and try again."
+                )
+        if stage3.get("error_status") == "rate_limited":
+            metadata["status"] = "failed"
+            metadata.pop("verdict", None)
         # Native compatibility API reports council size and usable responses,
         # but does not mark a reduced council as partial when review succeeds.
         configured = (metadata.get("config") or {}).get("council_size")
