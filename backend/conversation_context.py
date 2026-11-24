@@ -16,6 +16,8 @@ from llm_council.openrouter import query_model
 SUMMARY_MODEL = "google/gemini-2.5-flash"
 MAX_HISTORY_CHARS = 6000
 MAX_SUMMARY_CHARS = 4000
+# Older summaries may include failed Chairman responses and invalid turn offsets.
+MEMORY_VERSION = 2
 
 ProgressCallback = Callable[[str], Awaitable[None]]
 
@@ -35,7 +37,10 @@ def _completed_exchanges(messages: Sequence[Mapping[str, Any]]) -> list[Tuple[st
         elif message.get("role") == "assistant":
             stage3 = message.get("stage3")
             answer = stage3.get("response") if isinstance(stage3, dict) else None
-            if question and isinstance(answer, str) and answer.strip():
+            if (
+                question and isinstance(answer, str) and answer.strip()
+                and not stage3.get("error_status")
+            ):
                 complete.append((question, answer))
             question = None
     return complete
@@ -43,7 +48,7 @@ def _completed_exchanges(messages: Sequence[Mapping[str, Any]]) -> list[Tuple[st
 
 def _cached_memory(conversation: Mapping[str, Any], count: int) -> Tuple[str, int]:
     cached = conversation.get("context_memory")
-    if not isinstance(cached, dict):
+    if not isinstance(cached, dict) or cached.get("version") != MEMORY_VERSION:
         return "", 0
     summary = cached.get("summary")
     covered = cached.get("covered_turns")
@@ -155,6 +160,7 @@ async def prepare_council_query(
 
         new_summary = new_summary.strip()
         new_memory = {
+            "version": MEMORY_VERSION,
             "summary": new_summary,
             "covered_turns": len(complete),
             "model": model,
