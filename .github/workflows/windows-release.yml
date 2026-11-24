@@ -127,13 +127,13 @@ jobs:
               if (-not $apiReady) {
                 try {
                   $api = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8001/api/settings' -TimeoutSec 8
-                  $apiReady = $api.StatusCode -eq 200
-                  if ($apiReady) {
-                    $effective = $api.Content | ConvertFrom-Json
-                    if ($effective.profile -ne 'free') { throw "New-install preset must be Free, got $($effective.profile)" }
-                    if ($effective.api_key_configured) { throw 'Bundled beta must not contain any API key' }
-                  }
-                } catch { $lastError = $_.Exception.Message }
+                  if ($api.StatusCode -ne 200) { throw "Settings HTTP $($api.StatusCode)" }
+                  $effective = $api.Content | ConvertFrom-Json
+                  if ($effective.profile -ne 'free') { throw "New-install preset must be Free, got $($effective.profile)" }
+                  if ($effective.api_key_configured -ne $false) { throw 'Bundled beta must not contain any API key' }
+                  if ($effective.configuration_valid -ne $true) { throw 'Bundled Free configuration is invalid' }
+                  $apiReady = $true
+                } catch { $apiReady = $false; $lastError = $_.Exception.Message }
               }
               if ($uiReady -and $apiReady) { break }
               Start-Sleep -Milliseconds 500

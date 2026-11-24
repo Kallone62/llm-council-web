@@ -36,10 +36,33 @@ def is_free_document(document: dict) -> bool:
         council = sections["council"]
     else:
         council = sections if isinstance(sections, dict) else {}
+    models = council.get("models")
+    chairman = council.get("chairman")
+    # A stale all-Free preset must still be recognized as Free, not silently
+    # treated as a paid native tier when the canonical model list changes.
     return (
-        council.get("models") == list(FREE_MODELS)
-        and council.get("chairman") == FREE_CHAIRMAN
+        isinstance(models, list) and bool(models)
+        and all(isinstance(model, str) and model.endswith(":free") for model in models)
+        and (chairman is None or isinstance(chairman, str) and chairman.endswith(":free"))
     )
+
+
+def apply_free_preset(sections: dict, council: dict) -> None:
+    """One implementation of the fixed Free preset for settings and upgrades."""
+    council.update(models=list(FREE_MODELS), chairman=FREE_CHAIRMAN,
+                   chairman_disabled=False, style_normalization=False)
+    gateways = sections.setdefault("gateways", {})
+    gateways["default"] = "openrouter"
+    gateways.setdefault("fallback", {})["enabled"] = False
+    routing = gateways.setdefault("model_routing", {})
+    names = gateways.setdefault("model_name_map", {}).setdefault("openrouter", {})
+    for model in FREE_MODELS:
+        routing.pop(model, None)
+        names.pop(model, None)
+    evaluation = sections.setdefault("evaluation", {})
+    evaluation.setdefault("rubric", {})["enabled"] = False
+    evaluation.setdefault("safety", {})["enabled"] = False
+    evaluation.setdefault("bias", {})["audit_enabled"] = False
 
 
 def safe_local_title(query: str) -> str:

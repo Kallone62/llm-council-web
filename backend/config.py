@@ -30,7 +30,10 @@ load_dotenv(ENV_PATH)
 
 # Keep this local application's config deterministic. A user-supplied
 # LLM_COUNCIL_CONFIG still wins if they explicitly set one before startup.
-os.environ.setdefault("LLM_COUNCIL_CONFIG", str(DEFAULT_COUNCIL_CONFIG_PATH))
+raw_config_path = Path(os.environ.get("LLM_COUNCIL_CONFIG") or DEFAULT_COUNCIL_CONFIG_PATH).expanduser()
+os.environ["LLM_COUNCIL_CONFIG"] = str(
+    raw_config_path if raw_config_path.is_absolute() else PROJECT_ROOT / raw_config_path
+)
 
 # Karpathy UI conversation storage only.
 DATA_DIR = os.getenv("LLM_COUNCIL_UI_DATA_DIR", str(PROJECT_ROOT / "data" / "conversations"))
@@ -98,15 +101,41 @@ def writable_config_sections(document: Dict[str, Any]) -> Tuple[Dict[str, Any], 
 
 
 def write_council_config_document(document: Dict[str, Any]) -> Path:
-    """Atomically-ish persist YAML to the active config path."""
+    """Validate native YAML before atomically replacing the active config."""
 
     path = get_council_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8", newline="\n") as handle:
-        yaml.safe_dump(document, handle, sort_keys=False, allow_unicode=True)
-    tmp_path.replace(path)
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            yaml.safe_dump(document, handle, sort_keys=False, allow_unicode=True)
+        from llm_council.unified_config import load_config
+        load_config(tmp_path, strict=True)
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return path
+
+
+def validate_installation_config() -> None:
+    """During Windows install/upgrade, migrate only the persisted Free preset."""
+    from .free_profile import apply_free_preset, is_free_document
+    from llm_council.unified_config import load_config
+
+    path = get_council_config_path()
+    if path.resolve() != DEFAULT_COUNCIL_CONFIG_PATH.resolve():
+        raise ValueError("Installer cannot validate an external LLM_COUNCIL_CONFIG path")
+    document = read_council_config_document()
+    if not path.is_file():
+        raise ValueError("Installed council YAML is missing")
+    if is_free_document(document):
+        sections, council = writable_config_sections(document)
+        apply_free_preset(sections, council)
+        write_council_config_document(document)
+    else:
+        # Native/custom profile: preserve it, and fail rather than silently
+        # falling back to defaults if the old YAML is incompatible.
+        load_config(path, strict=True)
 
 
 def set_env_value(name: str, value: str) -> None:

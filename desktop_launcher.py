@@ -134,6 +134,9 @@ def main() -> None:
 
     # Import after the frozen-data path and executable location are set;
     # backend.config resolves the external YAML, .env and JSON storage then.
+    if os.getenv("LLM_COUNCIL_VALIDATE_INSTALL") == "1":
+        from backend.config import validate_installation_config
+        validate_installation_config()
     from backend.main import app
     import uvicorn
 
