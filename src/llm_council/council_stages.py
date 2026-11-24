@@ -471,7 +471,8 @@ Original text:
 Rewritten text:"""
 
         messages = [{"role": "user", "content": normalize_prompt}]
-        response = await query_model(_get_normalizer_model(), messages, timeout=60.0)
+        normalizer_model = _get_normalizer_model()
+        response = await query_model(normalizer_model, messages, timeout=60.0)
 
         if response is not None:
             normalized_results.append(
@@ -486,7 +487,7 @@ Rewritten text:"""
             total_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
             total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
             total_usage["total_tokens"] += usage.get("total_tokens", 0)
-            _add_cost_to_usage(total_usage, usage, model=result["model"])
+            _add_cost_to_usage(total_usage, usage, model=normalizer_model)
         else:
             # If normalization fails, use original
             normalized_results.append(
