@@ -1,7 +1,6 @@
 """Native verdict/dissent acceptance through real HTTP, not mocked verdict results."""
 import json
 import re
-import socket
 from collections import Counter
 
 import httpx
@@ -10,7 +9,7 @@ from fastapi.testclient import TestClient
 from llm_council import council
 
 from test_controlled_profiles import (
-    KEY, PROFILES, TITLE, TITLE_MODEL, decode_response, isolated_profile_config,
+    KEY, PROFILES, TITLE, TITLE_MODEL, decode_response, deny_external_network, isolated_profile_config,
 )
 
 MODELS, CHAIRMAN, _, _ = PROFILES["high"]
@@ -34,18 +33,7 @@ def install_verdict_provider(monkeypatch, requested, tied, outlier):
         verdict["deadlock_resolution"] = "The integrity concern outweighs convenience."
     final = SYNTHESIS if requested == "synthesis" else json.dumps(verdict)
 
-    def deny_network(*args, **kwargs):
-        pytest.fail("Unexpected external network in verdict acceptance")
-
-    monkeypatch.setattr(socket, "getaddrinfo", deny_network)
-    original_connect = socket.socket.connect
-
-    def connect(sock, address):
-        if sock.family in (socket.AF_INET, socket.AF_INET6):
-            deny_network()
-        return original_connect(sock, address)
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
+    deny_external_network(monkeypatch, "Unexpected external network in verdict acceptance")
 
     async def handle(_transport, request):
         assert request.method == "POST"
