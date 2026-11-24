@@ -251,7 +251,7 @@ Her oturumda yalnızca sıradaki tek iş ele alınır. Kod değişikliği, doğr
 - Ortak gerçek kontrol: `scripts/windows/assert-smoke-settings.ps1`. Regresyon: `tests/windows/test-smoke-settings.ps1`; geçerli durum ve HTTP 200 ile yanlış profil/anahtar, eksik alanlar, yanlış tip, bozuk JSON, HTTP hatası olmak üzere sekiz senaryo. Windows workflow bu testi EXE derlemesinden önce çalıştırır.
 - Doğrulama komutu: `pwsh -NoProfile -File tests/windows/test-smoke-settings.ps1`.
 - Durum: **PENDING** — yerel çalışma ortamında PowerShell yok; Windows CI sonucu ve paketli smoke sonucu henüz doğrulanmadı. Bu test gerçek kurulum/yükseltme veya tüm WIN-01/WIN-06 kabulünün kanıtı değildir. Bölüm 9'daki tam mutation doğrulaması da bekliyor.
-- Kanıt: `test-architecture/step-1-smoke-settings` dalındaki commit ve ilgili PR/Windows Actions çalışması; sonuç geldiğinde burada commit/run bağlantısı ve PASS/FAIL kaydedilecek.
+- Kanıt: [uygulama commit'i `2df1409`](https://github.com/Kallone62/llm-council-web/commit/2df1409016ba497c5946d9e8428223b94cd91b59), [PR #22](https://github.com/Kallone62/llm-council-web/pull/22), dal `test-architecture/step-1-smoke-settings`. İlk kontrolde commit için Actions run kaydı henüz görünmedi; sonuç doğrulandığında run bağlantısı ve PASS/FAIL kaydedilecek.
 - **Sıradaki iş:** önce yalnız İş 1.1'in Windows regresyonu ve paketli smoke sonucunu doğrula; başarısızsa aynı işi düzelt. Ardından Aşama 1'de kalan yanıltıcı başarı kontrollerine geç. Aşama 2 başlatılmadı.
 
 Beta yayını yapılmadı; mevcut release ve ürün özellikleri bu işin kapsamı dışındadır.
