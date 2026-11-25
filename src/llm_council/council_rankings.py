@@ -137,6 +137,16 @@ def detect_score_rank_mismatch(ranking: List[str], scores: Dict[str, Any]) -> bo
     return ranked_with_scores != score_order
 
 
+def _finite_json_float(value: str) -> Optional[float]:
+    """Keep invalid JSON numbers unavailable, including exponent overflow.
+
+    The raw reviewer text is preserved separately. Null has the same missing
+    score semantics as a nonfinite value but is safe for API and disk JSON.
+    """
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
 def parse_ranking_from_text(ranking_text: str) -> Dict[str, Any]:
     """
     Parse the ranking JSON from the model's response.
@@ -193,7 +203,8 @@ def parse_ranking_from_text(ranking_text: str) -> Dict[str, Any]:
     json_match = re.search(r"```json\s*([\s\S]*?)\s*```", ranking_text)
     if json_match:
         try:
-            parsed = json.loads(json_match.group(1))
+            parsed = json.loads(json_match.group(1), parse_constant=_finite_json_float,
+                                parse_float=_finite_json_float)
             # The fenced block can be *any* valid JSON, not just an object
             # (e.g. `null`, a bare array/number) — `.get` on a non-dict would
             # crash (found by Hypothesis fuzzing, #657).
@@ -226,7 +237,8 @@ def parse_ranking_from_text(ranking_text: str) -> Dict[str, Any]:
                     end = i + 1
                     break
         try:
-            parsed = json.loads(ranking_text[start:end])
+            parsed = json.loads(ranking_text[start:end], parse_constant=_finite_json_float,
+                                parse_float=_finite_json_float)
             if isinstance(parsed.get("ranking"), list):
                 result["ranking"] = parsed["ranking"]
             if isinstance(parsed.get("scores"), dict):
