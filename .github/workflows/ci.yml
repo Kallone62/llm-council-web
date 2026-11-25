@@ -118,6 +118,21 @@ jobs:
       - name: Verify UI-09 detects hidden errors, stuck loading, false final and rejected writes
         run: .venv/bin/python tests/browser/mutations_ui09.py
 
+      - name: Run real browser acceptance (UI-10)
+        run: .venv/bin/python tests/browser/ui10.py
+
+      - name: Verify UI-10 detects missing complete, premature final, stuck loading and false reload
+        run: .venv/bin/python tests/browser/mutations_ui10.py
+
+      - name: Attach UI-10 browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UI-10-browser-evidence
+          path: browser-artifacts/ui10/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Attach UI-09 browser evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -205,5 +220,6 @@ jobs:
             !browser-artifacts/ui07/
             !browser-artifacts/ui08/
             !browser-artifacts/ui09/
+            !browser-artifacts/ui10/
           if-no-files-found: ignore
           retention-days: 7
