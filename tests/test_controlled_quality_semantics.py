@@ -164,7 +164,7 @@ def test_quality_repair_semantics_api(gateway_config, monkeypatch, tmp_path, fai
         assert created.status_code == 200
         cid = created.json()['id']
         endpoint = f'/api/conversations/{cid}/message' + ('/stream' if stream else '')
-        payload = decode_response(client.post(endpoint, json={'content': QUESTION}), stream)
+        payload = decode_response(client.post(endpoint, json={'content': QUESTION}), stream, expected_title=TITLE)
         assert len(invoked) == 1
         verify(payload, observation, fail, True)
         disk = storage.get_conversation(cid)
