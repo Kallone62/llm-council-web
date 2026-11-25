@@ -490,7 +490,7 @@ def repair_quality_metrics(stage1: list, stage2: list, stage3: dict, metadata: d
             and isinstance(item.get("average_position"), (float, int))
         ]
         if not stage1_dict or len(ordered) < 2:
-            return metadata
+            return {**metadata, "quality_metrics": None}
         corrected = calculate_quality_metrics(
             stage1_responses=stage1_dict,
             stage2_rankings=[
@@ -503,5 +503,5 @@ def repair_quality_metrics(stage1: list, stage2: list, stage3: dict, metadata: d
         ).to_dict()
         return {**metadata, "quality_metrics": corrected}
     except Exception:
-        logger.warning("Quality metric correction failed; preserving native result", exc_info=True)
-        return metadata
+        logger.warning("Quality metric correction failed; reporting metrics unavailable", exc_info=True)
+        return {**metadata, "quality_metrics": None}
