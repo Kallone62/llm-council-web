@@ -1,0 +1,15 @@
+name: UI-01 annotation diagnosis
+on:
+  push:
+    branches: [diagnostic/ui01-sonar-annotations]
+permissions:
+  checks: read
+  contents: read
+jobs:
+  diagnosis:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read existing quality check annotations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api repos/Kallone62/llm-council-web/check-runs/138922023688/annotations --jq '.[] | {path,start_line,end_line,title,message}'
