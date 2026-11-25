@@ -136,6 +136,42 @@ def check_conversation(page, client, data, seeded):
     return cid
 
 
+@contextmanager
+def observed_browser(browser, output):
+    """Observe a key-free scenario with the existing UI-01 browser evidence rules."""
+    context = browser.new_context(service_workers="block")
+    network, errors, forbidden = [], [], []
+
+    def guard(route):
+        url = urlsplit(route.request.url)
+        if url.scheme == "http" and url.netloc == "localhost:8001":
+            route.continue_()
+        else:
+            forbidden.append(url.hostname or url.scheme)
+            route.abort()
+
+    context.route("**/*", guard)
+    context.tracing.start(screenshots=True, snapshots=True, sources=True)
+    page = context.new_page()
+    page.set_default_timeout(8000)
+    page.on("response", lambda r: network.append({"method": r.request.method,
+               "path": urlsplit(r.url).path, "status": r.status}))
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
+    try:
+        yield page, network, errors, forbidden
+    except BaseException:
+        page.screenshot(path=str(output / "failure.png"), full_page=True)
+        context.tracing.stop(path=str(output / "trace.zip"))
+        raise
+    else:
+        context.tracing.stop()
+    finally:
+        (output / "network.json").write_text(json.dumps(network, indent=2), encoding="utf-8")
+        (output / "console.json").write_text(json.dumps(errors, indent=2), encoding="utf-8")
+        context.close()
+
+
 def browser_case(browser, seeded):
     output = ARTIFACTS / ("seeded" if seeded else "empty")
     output.mkdir(parents=True, exist_ok=True)
@@ -143,41 +179,12 @@ def browser_case(browser, seeded):
         with isolated_server(Path(directory), output) as (client, data):
             if seeded:
                 (data / f"{EXISTING['id']}.json").write_text(json.dumps(EXISTING), encoding="utf-8")
-            context = browser.new_context(service_workers="block")
-            network, errors, forbidden = [], [], []
-
-            def guard(route):
-                url = urlsplit(route.request.url)
-                if url.scheme == "http" and url.netloc == "localhost:8001":
-                    route.continue_()
-                else:
-                    forbidden.append(url.hostname or url.scheme)
-                    route.abort()
-
-            context.route("**/*", guard)
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
-            page = context.new_page()
-            page.set_default_timeout(8000)
-            page.on("response", lambda r: network.append({"method": r.request.method,
-                       "path": urlsplit(r.url).path, "status": r.status}))
-            page.on("pageerror", lambda error: errors.append(str(error)))
-            page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
-            try:
+            with observed_browser(browser, output) as (page, network, errors, forbidden):
                 cid = check_conversation(page, client, data, seeded)
                 assert sum(r["method"] == "POST" and r["path"] == "/api/conversations" for r in network) == 1
                 assert any(r == {"method": "GET", "path": f"/api/conversations/{cid}", "status": 200} for r in network)
                 assert not forbidden, f"UI01: external browser traffic: {forbidden}"
                 assert not errors, f"UI01: browser errors: {errors}"
-            except BaseException:
-                page.screenshot(path=str(output / "failure.png"), full_page=True)
-                context.tracing.stop(path=str(output / "trace.zip"))
-                raise
-            else:
-                context.tracing.stop()
-            finally:
-                (output / "network.json").write_text(json.dumps(network, indent=2), encoding="utf-8")
-                (output / "console.json").write_text(json.dumps(errors, indent=2), encoding="utf-8")
-                context.close()
     print(f"UI01 PASS: {'seeded' if seeded else 'empty'}", flush=True)
 
 

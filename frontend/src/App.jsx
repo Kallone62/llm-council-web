@@ -92,8 +92,12 @@ function App() {
 
   const handleSelectConversation = (id) => {
     activeConversationIdRef.current = id;
-    setCurrentConversation(null);
-    setCurrentConversationId(id);
+    if (id !== currentConversationId) {
+      setCurrentConversation(null);
+      setCurrentConversationId(id);
+    } else if (!currentConversation) {
+      void loadConversation(id);
+    }
     setView('chat');
   };
 
