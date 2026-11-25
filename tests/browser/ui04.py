@@ -101,7 +101,7 @@ def assert_display(page, payload):
     expect(page.locator(".loading-indicator, .stage-loading, .council-error, .stage3-error")).to_have_count(0)
 
 
-def check_round(page, client, data, work):
+def check_round(page, client, data, work, output=ARTIFACTS):
     configure(client)
     with page.expect_response(lambda r: is_response(r, "GET", "/api/settings")) as loaded:
         response = page.goto(BASE + "/app/", wait_until="domcontentloaded")
@@ -129,21 +129,23 @@ def check_round(page, client, data, work):
     assert_display(page, payload)
     expect(page.get_by_role("button", name=f"{TITLE} 2 messages", exact=True)).to_be_visible()
     assert_provider(work)
-    (ARTIFACTS / "sse.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (output / "sse.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return detail
 
 
-def browser_case(browser):
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+def browser_case(browser, *, output=ARTIFACTS, after_round=None):
+    output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="council-ui04-") as directory:
         work = Path(directory)
         try:
-            with isolated_server(work, ARTIFACTS, server_script="serve_ui04.py") as (client, data):
+            with isolated_server(work, output, server_script="serve_ui04.py") as (client, data):
                 old = data / f"{EXISTING['id']}.json"
                 old.write_text(json.dumps(EXISTING), encoding="utf-8")
                 before = old.read_bytes()
-                with observed_browser(browser, ARTIFACTS) as (page, network, errors, forbidden):
-                    detail = check_round(page, client, data, work)
+                with observed_browser(browser, output) as (page, network, errors, forbidden):
+                    detail = check_round(page, client, data, work, output)
+                    if after_round is not None:
+                        after_round(page, client, data, work, detail, output)
                     assert old.read_bytes() == before and len(list(data.glob("*.json"))) == 2
                     assert [row for row in network if row["method"] == "POST"] == [
                         {"method": "POST", "path": "/api/conversations", "status": 200},
@@ -151,17 +153,17 @@ def browser_case(browser):
                     assert not forbidden and not errors, "UI04: browser errors or external traffic"
         finally:
             if (work / JOURNAL).is_file():
-                shutil.copyfile(work / JOURNAL, ARTIFACTS / JOURNAL)
+                shutil.copyfile(work / JOURNAL, output / JOURNAL)
     print("UI04 PASS: real three-stage stream, live progress, loading, UI/API/disk", flush=True)
 
 
-def main():
+def main(*, output=ARTIFACTS, after_round=None):
     assert (DIST / "index.html").is_file(), "UI04: production frontend build is missing"
     with sync_playwright() as playwright:
         executable = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
         browser = playwright.chromium.launch(headless=True, **({"executable_path": executable} if executable else {}))
         try:
-            browser_case(browser)
+            browser_case(browser, output=output, after_round=after_round)
         finally:
             browser.close()
 
