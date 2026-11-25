@@ -48,7 +48,7 @@ def ballot(labels, case, fenced, rubric):
     return 'Review follows.\n```json\n' + wire + '\n```' if fenced else wire
 
 
-def install_provider(path, monkeypatch, case, fenced, rubric):
+def install_provider(path, monkeypatch, case, fenced, rubric, *, ballot_builder=ballot):
     document = yaml.safe_load(path.read_text(encoding='utf-8'))
     document['evaluation']['rubric']['enabled'] = rubric
     path.write_text(yaml.safe_dump(document), encoding='utf-8')
@@ -67,7 +67,7 @@ def install_provider(path, monkeypatch, case, fenced, rubric):
             assert set(observed) == set(MODELS) and len(set(observed.values())) == 4
             assert not labels or labels == observed
             labels.update(observed)
-            answer = raw[model] = ballot(labels, case, fenced, rubric)
+            answer = raw[model] = ballot_builder(labels, case, fenced, rubric)
         elif prompt.startswith('Generate a very short title'):
             stage, answer = 'title', TITLE
             assert model == TITLE_MODEL
@@ -136,16 +136,11 @@ def test_nested_invalid_ranking_is_json_safe(fenced):
     assert json.loads(json.dumps(parsed, allow_nan=False)) == parsed
 
 
-@pytest.mark.parametrize('case', SCORES)
-@pytest.mark.parametrize('fenced', [False, True], ids=['raw', 'fenced'])
-@pytest.mark.parametrize('rubric', [False, True], ids=['holistic', 'rubric-fallback'])
-@pytest.mark.parametrize('stream', [False, True], ids=['rest', 'sse'])
-def test_holistic_json_api(gateway_config, monkeypatch, tmp_path, case, fenced, rubric, stream):
+def run_ballot_api(monkeypatch, tmp_path, stream, *, expected_review_state='completed'):
     from fastapi.testclient import TestClient
     from backend import config, main, storage
     from test_controlled_profiles import decode_response
 
-    observation = install_provider(gateway_config, monkeypatch, case, fenced, rubric)
     monkeypatch.setattr(config, 'ENV_PATH', tmp_path / '.env')
     monkeypatch.setattr(storage, 'DATA_DIR', str(tmp_path / 'conversations'))
     assert main.run_full_council is council.run_full_council
@@ -154,9 +149,20 @@ def test_holistic_json_api(gateway_config, monkeypatch, tmp_path, case, fenced, 
         assert created.status_code == 200
         cid = created.json()['id']
         path = f'/api/conversations/{cid}/message' + ('/stream' if stream else '')
-        payload = decode_response(client.post(path, json={'content': QUESTION}), stream, expected_title=TITLE)
-        verify(payload, observation, case, rubric, True)
+        payload = decode_response(client.post(path, json={'content': QUESTION}), stream,
+                                  expected_title=TITLE, expected_review_state=expected_review_state)
         saved = storage.get_conversation(cid)
         assert saved['title'] == TITLE
         assert saved['messages'] == [{'role': 'user', 'content': QUESTION}, {'role': 'assistant', **payload}]
         assert client.get(f'/api/conversations/{cid}').json() == saved
+    return payload
+
+
+@pytest.mark.parametrize('case', SCORES)
+@pytest.mark.parametrize('fenced', [False, True], ids=['raw', 'fenced'])
+@pytest.mark.parametrize('rubric', [False, True], ids=['holistic', 'rubric-fallback'])
+@pytest.mark.parametrize('stream', [False, True], ids=['rest', 'sse'])
+def test_holistic_json_api(gateway_config, monkeypatch, tmp_path, case, fenced, rubric, stream):
+    observation = install_provider(gateway_config, monkeypatch, case, fenced, rubric)
+    payload = run_ballot_api(monkeypatch, tmp_path, stream)
+    verify(payload, observation, case, rubric, True)
