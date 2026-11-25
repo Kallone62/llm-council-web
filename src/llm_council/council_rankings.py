@@ -221,54 +221,39 @@ def parse_ranking_from_text(ranking_text: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    # Fallback: try to find raw JSON object
-    json_obj_match = re.search(r'\{\s*"ranking"\s*:', ranking_text)
-    if json_obj_match:
-        # Find the matching closing brace
-        start = json_obj_match.start()
-        brace_count = 0
-        end = start
-        for i, char in enumerate(ranking_text[start:], start):
-            if char == "{":
-                brace_count += 1
-            elif char == "}":
-                brace_count -= 1
-                if brace_count == 0:
-                    end = i + 1
-                    break
+    # Parse raw ballot JSON without relying on key order or counting braces
+    # inside quoted strings. A raw object may also follow introductory prose.
+    stripped = ranking_text.lstrip()
+    json_obj_match = re.search(r'\{\s*"(?:ranking|scores)"\s*:', ranking_text)
+    start = (len(ranking_text) - len(stripped) if stripped.startswith("{")
+             else json_obj_match.start() if json_obj_match else None)
+    if start is not None:
         try:
-            parsed = json.loads(ranking_text[start:end], parse_constant=_finite_json_float,
-                                parse_float=_finite_json_float)
-            if isinstance(parsed.get("ranking"), list):
-                result["ranking"] = parsed["ranking"]
-            if isinstance(parsed.get("scores"), dict):
-                result["scores"] = parsed["scores"]
-            # Check for score/rank mismatch
-            if detect_score_rank_mismatch(result["ranking"], result["scores"]):
-                result["score_rank_mismatch"] = True
-            return result
+            parsed, _ = json.JSONDecoder(parse_constant=_finite_json_float,
+                                         parse_float=_finite_json_float).raw_decode(ranking_text, start)
+            if isinstance(parsed, dict) and ("ranking" in parsed or "scores" in parsed):
+                if isinstance(parsed.get("ranking"), list):
+                    result["ranking"] = parsed["ranking"]
+                if isinstance(parsed.get("scores"), dict):
+                    result["scores"] = parsed["scores"]
+                if detect_score_rank_mismatch(result["ranking"], result["scores"]):
+                    result["score_rank_mismatch"] = True
+                return result
         except json.JSONDecodeError:
             pass
 
-    # Legacy fallback: Look for "FINAL RANKING:" section (backwards compatibility)
-    if "FINAL RANKING:" in ranking_text:
-        parts = ranking_text.split("FINAL RANKING:")
-        if len(parts) >= 2:
-            ranking_section = parts[1]
-            numbered_matches = re.findall(r"\d+\.\s*Response [A-Z]", ranking_section)
-            if numbered_matches:
-                result["ranking"] = [
-                    re.search(r"Response [A-Z]", m).group() for m in numbered_matches
-                ]
-                return result
-            matches = re.findall(r"Response [A-Z]", ranking_section)
-            if matches:
-                result["ranking"] = matches
-                return result
-
-    # Final fallback: try to find any "Response X" patterns in order
-    matches = re.findall(r"Response [A-Z]", ranking_text)
-    result["ranking"] = matches
+    # Legacy ballots must express an ordered list, not merely mention candidates.
+    # An explicit heading can follow critique text; without one, require the
+    # entire response to be a list. Never fall back to scanning arbitrary prose.
+    heading = re.search(r"(?m)^[ \t]*FINAL RANKING:[ \t]*", ranking_text)
+    section = (ranking_text[heading.end():] if heading else ranking_text).strip()
+    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    entries = [re.fullmatch(r"(?:(?:\d+\.|[-*])[ \t]*)?(Response [A-Z])", line)
+               for line in lines]
+    if entries and all(entries):
+        result["ranking"] = [entry.group(1) for entry in entries]
+    elif re.fullmatch(r"Response [A-Z](?:[ \t]*[,>][ \t]*Response [A-Z])+", section):
+        result["ranking"] = re.findall(r"Response [A-Z]", section)
     return result
 
 
