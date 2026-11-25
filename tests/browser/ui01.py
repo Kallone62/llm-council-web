@@ -28,7 +28,7 @@ EXISTING = {
 
 
 @contextmanager
-def isolated_server(work, output):
+def isolated_server(work, output, *, server_script="serve.py"):
     # Never reuse the real application's .env, YAML, data, or provider keys.
     shutil.copytree(ROOT / "backend", work / "backend", ignore=shutil.ignore_patterns("__pycache__"))
     config = work / "llm_council.yaml"
@@ -46,7 +46,7 @@ def isolated_server(work, output):
         probe.bind(("127.0.0.1", 8001))
     log = output / "backend.log"
     with log.open("w", encoding="utf-8") as handle:
-        server = subprocess.Popen([sys.executable, str(Path(__file__).with_name("serve.py")), str(DIST)],
+        server = subprocess.Popen([sys.executable, str(Path(__file__).with_name(server_script)), str(DIST)],
                                   cwd=work, env=env, stdout=handle, stderr=subprocess.STDOUT)
         try:
             with httpx.Client(base_url=BASE, trust_env=False, timeout=2) as client:

@@ -18,11 +18,11 @@ async def deny_async_provider(*args, **kwargs):
     deny_provider(*args, **kwargs)
 
 
-def serve(dist):
+def serve(dist, *, async_transport=deny_async_provider):
     # The caller sets cwd to an isolated copy of backend/configuration.
     sys.path.insert(0, str(Path.cwd()))
     httpx.HTTPTransport.handle_request = deny_provider
-    httpx.AsyncHTTPTransport.handle_async_request = deny_async_provider
+    httpx.AsyncHTTPTransport.handle_async_request = async_transport
     original_dns = socket.getaddrinfo
 
     def loopback_dns(host, *args, **kwargs):

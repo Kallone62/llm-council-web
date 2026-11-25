@@ -82,6 +82,21 @@ jobs:
       - name: Verify UI-03 detects profile persistence, effective reload and Free notice regressions
         run: .venv/bin/python tests/browser/mutations_ui03.py
 
+      - name: Run real browser acceptance (UI-04)
+        run: .venv/bin/python tests/browser/ui04.py
+
+      - name: Verify UI-04 detects live progress, persistence, loading and final answer regressions
+        run: .venv/bin/python tests/browser/mutations_ui04.py
+
+      - name: Attach UI-04 browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UI-04-browser-evidence
+          path: browser-artifacts/ui04/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Attach UI-03 browser evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -109,5 +124,6 @@ jobs:
             browser-artifacts/
             !browser-artifacts/ui02/
             !browser-artifacts/ui03/
+            !browser-artifacts/ui04/
           if-no-files-found: ignore
           retention-days: 7
