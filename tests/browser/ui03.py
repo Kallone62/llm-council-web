@@ -4,12 +4,11 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import yaml
 from playwright.sync_api import expect, sync_playwright
 
-from ui01 import BASE, DIST, ROOT, EXISTING, isolated_server, is_response, json_response
+from ui01 import BASE, DIST, ROOT, EXISTING, isolated_server, is_response, json_response, observed_browser
 
 ARTIFACTS = ROOT / "browser-artifacts" / "ui03" / os.getenv("UI03_RUN", "normal")
 # Independent expectations from the pinned native pools and shipped Free preset.
@@ -85,7 +84,7 @@ def check_settings(page, profile):
 
 def open_settings(page, profile):
     with page.expect_response(lambda r: is_response(r, "GET", SETTINGS)) as loaded:
-        page.get_by_role("button", name=re.compile("Settings")).click()
+        page.get_by_role("button", name="⚙ Settings").click()
     assert loaded.value.status == 200
     assert_effective(loaded.value.json(), profile)
     check_settings(page, profile)
@@ -93,7 +92,8 @@ def open_settings(page, profile):
 
 def check_chat(page, profile):
     page.get_by_role("button", name="Existing archive conversation 1 messages").click()
-    expect(page.get_by_text("Keep this original record.", exact=True)).to_be_visible()
+    expect(page.get_by_text("Keep this original record.", exact=True),
+           "UI03: existing conversation missing after selection").to_be_visible()
     check_notice(page, NOTICE, profile == "free")
 
 
@@ -153,41 +153,12 @@ def browser_case(browser):
         work = Path(directory)
         with isolated_server(work, ARTIFACTS) as (client, data):
             (data / f"{EXISTING['id']}.json").write_text(json.dumps(EXISTING), encoding="utf-8")
-            context = browser.new_context(service_workers="block")
-            network, errors, forbidden = [], [], []
-
-            def guard(route):
-                url = urlsplit(route.request.url)
-                if url.scheme == "http" and url.netloc == "localhost:8001":
-                    route.continue_()
-                else:
-                    forbidden.append(url.hostname or url.scheme)
-                    route.abort()
-
-            context.route("**/*", guard)
-            context.tracing.start(screenshots=True, snapshots=True, sources=True)
-            page = context.new_page()
-            page.set_default_timeout(8000)
-            page.on("response", lambda r: network.append({"method": r.request.method,
-                       "path": urlsplit(r.url).path, "status": r.status}))
-            page.on("pageerror", lambda error: errors.append(str(error)))
-            page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
-            try:
+            with observed_browser(browser, ARTIFACTS) as (page, network, errors, forbidden):
                 check_profiles(page, client, data, work / "llm_council.yaml")
                 writes = [r for r in network if r["method"] not in ("GET", "HEAD")]
                 assert writes == [{"method": "PUT", "path": SETTINGS, "status": 200}] * len(TRANSITIONS)
                 assert not forbidden, "UI03: unexpected external browser traffic"
                 assert not errors, f"UI03: browser errors: {errors}"
-            except BaseException:
-                page.screenshot(path=str(ARTIFACTS / "failure.png"), full_page=True)
-                context.tracing.stop(path=str(ARTIFACTS / "trace.zip"))
-                raise
-            else:
-                context.tracing.stop()
-            finally:
-                (ARTIFACTS / "network.json").write_text(json.dumps(network, indent=2), encoding="utf-8")
-                (ARTIFACTS / "console.json").write_text(json.dumps(errors, indent=2), encoding="utf-8")
-                context.close()
     print("UI03 PASS: all six profile transitions", flush=True)
 
 

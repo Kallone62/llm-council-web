@@ -14,6 +14,16 @@ def main():
          "        # Mutation: skip profile persistence.", "UI03: persisted native tier mismatch", False),
         ("stale-effective-profile", "backend/main.py", "        reload_config()\n    except Exception as exc:",
          "        # Mutation: skip native reload.\n    except Exception as exc:", "UI03: effective profile mismatch", False),
+        ("cleared-selected-conversation", "frontend/src/App.jsx",
+         """    if (id !== currentConversationId) {
+      setCurrentConversation(null);
+      setCurrentConversationId(id);
+    } else if (!currentConversation) {
+      loadConversation(id);
+    }""",
+         """    setCurrentConversation(null);
+    setCurrentConversationId(id);""",
+         "UI03: existing conversation missing after selection", True),
         ("stale-chat-profile", "frontend/src/components/Settings.jsx",
          "onProfileChange?.(data.profile);", "onProfileChange?.('free');",
          "UI03: Free notice not hidden", True),
