@@ -18,7 +18,7 @@ async def deny_async_provider(*args, **kwargs):
     deny_provider(*args, **kwargs)
 
 
-def serve(dist, *, async_transport=deny_async_provider):
+def serve(dist, *, async_transport=deny_async_provider, wrap_app=None):
     # The caller sets cwd to an isolated copy of backend/configuration.
     sys.path.insert(0, str(Path.cwd()))
     httpx.HTTPTransport.handle_request = deny_provider
@@ -34,7 +34,7 @@ def serve(dist, *, async_transport=deny_async_provider):
     from backend.main import app
 
     app.mount("/app", StaticFiles(directory=dist, html=True), name="frontend")
-    uvicorn.run(app, host="127.0.0.1", port=8001, log_level="info")
+    uvicorn.run(wrap_app(app) if wrap_app else app, host="127.0.0.1", port=8001, log_level="info")
 
 
 if __name__ == "__main__":
