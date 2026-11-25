@@ -112,6 +112,21 @@ jobs:
       - name: Verify UI-08 detects missing, foreign, failed and rewritten history
         run: .venv/bin/python tests/browser/mutations_ui08.py
 
+      - name: Run real browser acceptance (UI-09)
+        run: .venv/bin/python tests/browser/ui09.py
+
+      - name: Verify UI-09 detects hidden errors, stuck loading, false final and rejected writes
+        run: .venv/bin/python tests/browser/mutations_ui09.py
+
+      - name: Attach UI-09 browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UI-09-browser-evidence
+          path: browser-artifacts/ui09/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Attach UI-08 browser evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -189,5 +204,6 @@ jobs:
             !browser-artifacts/ui06/
             !browser-artifacts/ui07/
             !browser-artifacts/ui08/
+            !browser-artifacts/ui09/
           if-no-files-found: ignore
           retention-days: 7
