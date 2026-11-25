@@ -120,7 +120,15 @@ def scenario(page, client, data, work, output, network, errors, forbidden, case)
         allowed.add("Stream error: " + message)
     else:
         allowed.add("Failed to load resource: the server responded with a status of 400 (Bad Request)")
-    assert not forbidden and all(error in allowed for error in errors), f"UI09: unexpected browser errors: {errors}"
+    # Chromium formats a logged Error object as its message plus JS stack.
+    # Accept only the exact expected first line and genuine stack frames.
+    def expected_console(error):
+        first, *stack = error.splitlines()
+        return first in allowed and (not stack or (
+            first == "Failed to send message: Error: " + message
+            and all(frame.startswith("    at ") for frame in stack)))
+
+    assert not forbidden and all(expected_console(error) for error in errors), f"UI09: unexpected browser errors: {errors}"
 
 
 def main():
