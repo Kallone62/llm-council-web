@@ -96,7 +96,7 @@ function App() {
       setCurrentConversation(null);
       setCurrentConversationId(id);
     } else if (!currentConversation) {
-      loadConversation(id);
+      void loadConversation(id);
     }
     setView('chat');
   };

@@ -19,7 +19,7 @@ def main():
       setCurrentConversation(null);
       setCurrentConversationId(id);
     } else if (!currentConversation) {
-      loadConversation(id);
+      void loadConversation(id);
     }""",
          """    setCurrentConversation(null);
     setCurrentConversationId(id);""",
