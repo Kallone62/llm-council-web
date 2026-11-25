@@ -5,6 +5,7 @@ import secrets
 import shutil
 import sys
 import tempfile
+import traceback
 import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -142,7 +143,8 @@ def settings_case(browser, work, client, keys, evidence):
     context.route("**/*", guard)
     page = context.new_page()
     page.set_default_timeout(8000)
-    page.on("request", requests.append)
+    page.on("request", lambda request: requests.append(request))
+
     def observe_response(response):
         responses.append(response)
         network.append({"method": response.request.method, "path": urlsplit(response.url).path,
@@ -226,7 +228,10 @@ def main():
         # AcceptanceError messages are static; don't print Playwright exception details.
         raise SystemExit(str(error)) from None
     except BaseException as error:
-        raise SystemExit(f"UI02: harness failure ({type(error).__name__})") from None
+        # File/function/line only: no exception values, source lines or locals.
+        locations = " -> ".join(f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+                                for frame in traceback.extract_tb(error.__traceback__))
+        raise SystemExit(f"UI02: harness failure ({type(error).__name__}) at {locations}") from None
 
 
 if __name__ == "__main__":
