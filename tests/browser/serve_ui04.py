@@ -35,7 +35,7 @@ def record(phase, stage, model):
         handle.write(json.dumps({"phase": phase, "stage": stage, "model": model}) + "\n")
 
 
-def classify(request):
+def classify(request, *, review_for=None, chairman_reviews=None):
     assert request.method == "POST"
     assert str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
     assert request.headers.get("authorization") == f"Bearer {KEY}"
@@ -48,18 +48,19 @@ def classify(request):
         return "stage1", model, candidate(model)
     if "<responses_to_evaluate>" in prompt:
         assert model in MODELS and all(candidate(m) in prompt for m in MODELS)
-        return "stage2", model, REVIEW
+        return "stage2", model, REVIEW if review_for is None else review_for(model, prompt)
     if prompt.startswith("You are the Chairman of an LLM Council."):
         assert model == CHAIRMAN and all(candidate(m) in prompt for m in MODELS)
-        assert REVIEW in prompt and "AGGREGATE RANKINGS" in prompt
+        expected_reviews = [REVIEW] if chairman_reviews is None else chairman_reviews()
+        assert all(review in prompt for review in expected_reviews) and "AGGREGATE RANKINGS" in prompt
         return "stage3", model, FINAL
     assert prompt.startswith("Generate a very short title") and model == TITLE_MODEL
     return "title", model, TITLE
 
 
-async def controlled_provider(_transport, request):
+async def controlled_provider(_transport, request, *, classifier=classify):
     try:
-        stage, model, content = classify(request)
+        stage, model, content = classifier(request)
     except (AssertionError, KeyError, ValueError, TypeError, IndexError):
         record("rejected", "unexpected", "unknown")
         raise AssertionError("UI04: unexpected provider request") from None
