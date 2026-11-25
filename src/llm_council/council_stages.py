@@ -38,6 +38,7 @@ from llm_council.layer_contracts import LayerEventType, emit_layer_event
 from llm_council.rubric import (
     calculate_weighted_score,
     calculate_weighted_score_with_accuracy_ceiling,
+    is_valid_rubric_evaluation,
     parse_rubric_evaluation,
 )
 from llm_council.safety_gate import apply_safety_gate_to_score, check_response_safety
@@ -893,17 +894,17 @@ Now provide your evaluation and ranking:"""
             # ADR-016: Parse rubric evaluation if enabled, fall back to holistic
             if eval_config.rubric.enabled:
                 rubric_parsed = parse_rubric_evaluation(full_text)
-                if rubric_parsed:
+                if is_valid_rubric_evaluation(rubric_parsed, label_to_model):
                     # Calculate weighted scores with accuracy ceiling
                     evaluations = rubric_parsed.get("evaluations", {})
                     scores_with_ceiling = {}
                     for resp_label, eval_data in evaluations.items():
                         dimension_scores = {
-                            "accuracy": eval_data.get("accuracy", 5),
-                            "relevance": eval_data.get("relevance", 5),
-                            "completeness": eval_data.get("completeness", 5),
-                            "conciseness": eval_data.get("conciseness", 5),
-                            "clarity": eval_data.get("clarity", 5),
+                            "accuracy": eval_data["accuracy"],
+                            "relevance": eval_data["relevance"],
+                            "completeness": eval_data["completeness"],
+                            "conciseness": eval_data["conciseness"],
+                            "clarity": eval_data["clarity"],
                         }
                         if eval_config.rubric.accuracy_ceiling_enabled:
                             overall = calculate_weighted_score_with_accuracy_ceiling(
