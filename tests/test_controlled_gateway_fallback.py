@@ -64,6 +64,16 @@ def gateway_config(tmp_path, monkeypatch):
     return path
 
 
+def decode_openrouter_review_request(request, question):
+    """Validate the real HTTP boundary and extract the model and user prompt."""
+    assert (request.method, str(request.url), request.headers.get('authorization')) == (
+        'POST', PRIMARY, f'Bearer {KEYS[PRIMARY]}')
+    body = json.loads(request.content)
+    model, prompt = body['model'], body['messages'][-1]['content']
+    assert question in prompt
+    return model, prompt
+
+
 def set_policy(path, enabled):
     document = yaml.safe_load(path.read_text(encoding='utf-8'))
     document['gateways']['fallback']['enabled'] = enabled

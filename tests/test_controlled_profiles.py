@@ -140,14 +140,14 @@ def assert_profile(payload, profile, multiplier):
     assert cfg.timeouts.get_timeout(profile, "total") == total * multiplier * 1000
 
 
-def decode_response(response, stream):
+def decode_response(response, stream, *, expected_title=TITLE):
     assert response.status_code == 200, response.text
     if not stream:
         return response.json()
     events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
     assert [event["type"] for event in events[-5:]] == [
         "stage1_complete", "stage2_complete", "stage3_complete", "complete", "title_complete"]
-    assert events[-1]["data"] == {"title": TITLE}
+    assert events[-1]["data"] == {"title": expected_title}
     assert all(e["type"] == "engine_progress" for e in events[:-5])
     progress = [e["data"] for e in events[:-5]]
     assert [(e["stage"], e["state"]) for e in progress] == [
