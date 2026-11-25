@@ -65,12 +65,15 @@ def decode_stream(response):
     return {"stage1": events[-5]["data"], "stage2": events[-4]["data"], "stage3": events[-3]["data"], "metadata": metadata}
 
 
-def assert_result(payload):
+def assert_result(payload, *, review_oracle=None):
     answers, reviews, final, metadata = (payload[key] for key in ("stage1", "stage2", "stage3", "metadata"))
     assert len(answers) == len(reviews) == len(MODELS)
     assert {row["model"]: row["response"] for row in answers} == {model: candidate(model) for model in MODELS}
     assert {row["model"] for row in reviews} == set(MODELS)
-    assert all(row["ranking"] == REVIEW and row["parsed_ranking"]["ranking"] == LABELS for row in reviews)
+    if review_oracle is None:
+        assert all(row["ranking"] == REVIEW and row["parsed_ranking"]["ranking"] == LABELS for row in reviews)
+    else:
+        review_oracle(payload)
     assert final["model"] == CHAIRMAN and final["response"] == FINAL and not final.get("error_status")
     assert metadata.get("status") not in ("failed", "partial") and not metadata.get("degraded_mode")
     assert metadata["peer_review"]["state"] == "completed"
@@ -101,7 +104,7 @@ def assert_display(page, payload):
     expect(page.locator(".loading-indicator, .stage-loading, .council-error, .stage3-error")).to_have_count(0)
 
 
-def check_round(page, client, data, work, output=ARTIFACTS):
+def check_round(page, client, data, work, output=ARTIFACTS, *, review_oracle=None):
     configure(client)
     with page.expect_response(lambda r: is_response(r, "GET", "/api/settings")) as loaded:
         response = page.goto(BASE + "/app/", wait_until="domcontentloaded")
@@ -121,7 +124,7 @@ def check_round(page, client, data, work, output=ARTIFACTS):
     assert_live(page, work, entry)
     expect(entry, "UI04: loading did not end").to_be_editable()
     payload = decode_stream(streamed.value)
-    assert_result(payload)
+    assert_result(payload, review_oracle=review_oracle)
     record = json_response(client.get(detail))
     expected_messages = [{"role": "user", "content": QUESTION}, {"role": "assistant", **payload}]
     disk = json.loads((data / f"{cid}.json").read_text(encoding="utf-8"))
@@ -133,17 +136,18 @@ def check_round(page, client, data, work, output=ARTIFACTS):
     return detail
 
 
-def browser_case(browser, *, output=ARTIFACTS, after_round=None):
+def browser_case(browser, *, output=ARTIFACTS, after_round=None,
+                 server_script="serve_ui04.py", review_oracle=None):
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="council-ui04-") as directory:
         work = Path(directory)
         try:
-            with isolated_server(work, output, server_script="serve_ui04.py") as (client, data):
+            with isolated_server(work, output, server_script=server_script) as (client, data):
                 old = data / f"{EXISTING['id']}.json"
                 old.write_text(json.dumps(EXISTING), encoding="utf-8")
                 before = old.read_bytes()
                 with observed_browser(browser, output) as (page, network, errors, forbidden):
-                    detail = check_round(page, client, data, work, output)
+                    detail = check_round(page, client, data, work, output, review_oracle=review_oracle)
                     if after_round is not None:
                         after_round(page, client, data, work, detail, output)
                     assert old.read_bytes() == before and len(list(data.glob("*.json"))) == 2
@@ -157,13 +161,14 @@ def browser_case(browser, *, output=ARTIFACTS, after_round=None):
     print("UI04 PASS: real three-stage stream, live progress, loading, UI/API/disk", flush=True)
 
 
-def main(*, output=ARTIFACTS, after_round=None):
+def main(*, output=ARTIFACTS, after_round=None, server_script="serve_ui04.py", review_oracle=None):
     assert (DIST / "index.html").is_file(), "UI04: production frontend build is missing"
     with sync_playwright() as playwright:
         executable = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
         browser = playwright.chromium.launch(headless=True, **({"executable_path": executable} if executable else {}))
         try:
-            browser_case(browser, output=output, after_round=after_round)
+            browser_case(browser, output=output, after_round=after_round,
+                         server_script=server_script, review_oracle=review_oracle)
         finally:
             browser.close()
 
