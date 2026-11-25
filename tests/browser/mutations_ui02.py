@@ -14,7 +14,9 @@ from ui02 import AcceptanceError, publish_evidence
 def verify_artifact_guard():
     for compressed in (False, True):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory)
+            source = Path(directory) / "source"
+            source.mkdir()
+            destination = Path(directory) / "published"
             key = "sk-or-v1-" + secrets.token_hex(32)
             if compressed:
                 with zipfile.ZipFile(source / "trace.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -22,11 +24,12 @@ def verify_artifact_guard():
             else:
                 (source / "backend.log").write_text(key, encoding="utf-8")
             try:
-                publish_evidence(source, [key])
+                publish_evidence(source, [key], destination)
             except AcceptanceError as error:
                 assert str(error) == ("UI02: key leaked in trace" if compressed else "UI02: key leaked in evidence")
             else:
                 raise AssertionError("UI02: artifact guard accepted secret")
+            assert not destination.exists(), "UI02: unsafe evidence was published"
             print(f"UI02 artifact leak rejected: {'compressed trace' if compressed else 'plain log'}", flush=True)
 
 
