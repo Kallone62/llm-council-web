@@ -10,7 +10,7 @@ import yaml
 from llm_council import council
 from llm_council.unified_config import get_config, reload_config
 
-from test_controlled_gateway_fallback import CHAIRMAN, KEYS, MODELS, PRIMARY, TITLE_MODEL, gateway_config
+from test_controlled_gateway_fallback import CHAIRMAN, MODELS, TITLE_MODEL, decode_openrouter_review_request, gateway_config
 from test_controlled_profiles import TITLE, decode_response
 
 QUESTION = 'ENG28: Should we verify the archive checksum?'
@@ -80,11 +80,7 @@ def setup_case(path, monkeypatch, case):
     calls, labels, raw, chairman_prompts = [], {}, {}, []
 
     async def handle(_transport, request):
-        assert (request.method, str(request.url), request.headers.get('authorization')) == (
-            'POST', PRIMARY, f'Bearer {KEYS[PRIMARY]}')
-        body = json.loads(request.content)
-        model, prompt = body['model'], body['messages'][-1]['content']
-        assert QUESTION in prompt
+        model, prompt = decode_openrouter_review_request(request, QUESTION)
         if prompt == QUESTION:
             stage, answer = 'stage1', ANSWERS[model]
         elif '<responses_to_evaluate>' in prompt:
