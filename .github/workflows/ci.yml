@@ -106,6 +106,21 @@ jobs:
       - name: Verify UI-07 detects Chairman result and warning regressions
         run: .venv/bin/python tests/browser/mutations_ui07.py
 
+      - name: Run real browser acceptance (UI-08)
+        run: .venv/bin/python tests/browser/ui08.py
+
+      - name: Verify UI-08 detects missing, foreign, failed and rewritten history
+        run: .venv/bin/python tests/browser/mutations_ui08.py
+
+      - name: Attach UI-08 browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UI-08-browser-evidence
+          path: browser-artifacts/ui08/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Attach UI-07 browser evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -173,5 +188,6 @@ jobs:
             !browser-artifacts/ui05/
             !browser-artifacts/ui06/
             !browser-artifacts/ui07/
+            !browser-artifacts/ui08/
           if-no-files-found: ignore
           retention-days: 7
