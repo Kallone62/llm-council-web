@@ -1,6 +1,6 @@
 [project]
 name = "llm-council-core"
-version = "0.53.0+eng30.1"
+version = "0.53.0+eng31.1"
 description = "Multi-LLM council system with peer review and synthesis"
 readme = "README.md"
 requires-python = ">=3.10"
