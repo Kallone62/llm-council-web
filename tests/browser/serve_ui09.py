@@ -23,18 +23,23 @@ SSE_ERROR = "Could not prepare AI conversation memory. Please retry."
 
 async def memory_failure(_transport, request):
     try:
-        assert (request.method, str(request.url), request.headers.get("authorization")) == (
-            "POST", "https://openrouter.ai/api/v1/chat/completions", f"Bearer {KEY}")
+        if (request.method, str(request.url), request.headers.get("authorization")) != (
+                "POST", "https://openrouter.ai/api/v1/chat/completions", f"Bearer {KEY}"):
+            raise ValueError("Unexpected provider request target or authorization")
         body = json.loads(request.content)
-        assert body["model"] == TITLE_MODEL
-        assert "You maintain concise, faithful memory" in body["messages"][0]["content"]
-        assert json.loads(body["messages"][-1]["content"]) == {
+        if body["model"] != TITLE_MODEL:
+            raise ValueError("Unexpected memory model")
+        if "You maintain concise, faithful memory" not in body["messages"][0]["content"]:
+            raise ValueError("Unexpected memory instructions")
+        if json.loads(body["messages"][-1]["content"]) != {
             "previous_memory": None,
             "completed_exchanges_since_memory": [
                 {"user_question": LONG_QUESTION, "chairman_final_answer": OLD_ANSWER}],
-        }
-        assert request.extensions["timeout"] == dict.fromkeys(("connect", "read", "write", "pool"), 45.0)
-    except (AssertionError, KeyError, ValueError, TypeError, IndexError):
+        }:
+            raise ValueError("Unexpected memory input")
+        if request.extensions["timeout"] != dict.fromkeys(("connect", "read", "write", "pool"), 45.0):
+            raise ValueError("Unexpected memory timeout")
+    except (KeyError, ValueError, TypeError, IndexError):
         with Path(JOURNAL).open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"stage": "unexpected"}) + "\n")
         raise AssertionError("UI09: unexpected provider request") from None
