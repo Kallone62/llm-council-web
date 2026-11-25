@@ -190,7 +190,7 @@ def settings_case(browser, work, client, keys, evidence):
             context.close()
 
 
-def publish_evidence(source, keys):
+def publish_evidence(source, keys, destination=ARTIFACTS):
     # Fail closed before copying any artifact to the CI upload directory.
     for file in source.iterdir():
         private(file.read_bytes(), keys, "UI02: key leaked in evidence")
@@ -199,7 +199,7 @@ def publish_evidence(source, keys):
                 for entry in archive.namelist():
                     private(entry, keys, "UI02: key leaked in trace")
                     private(archive.read(entry), keys, "UI02: key leaked in trace")
-    shutil.copytree(source, ARTIFACTS, dirs_exist_ok=True)
+    shutil.copytree(source, destination, dirs_exist_ok=True)
 
 
 def main():
