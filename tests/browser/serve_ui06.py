@@ -45,8 +45,13 @@ def expected_chairman_reviews():
     return [review_text(model, mapping) for model in MODELS]
 
 
+async def controlled_ui06_provider(transport, request):
+    # HTTPX installs this on the transport class: a regular function binds self.
+    classifier = partial(classify, review_for=observe_review, chairman_reviews=expected_chairman_reviews)
+    return await controlled_provider(transport, request, classifier=classifier)
+
+
 if __name__ == "__main__":
     if not os.environ.get("LLM_COUNCIL_UI_DATA_DIR") or not os.environ.get("LLM_COUNCIL_CONFIG"):
         raise RuntimeError("Run the isolated browser harness, not the server directly")
-    classifier = partial(classify, review_for=observe_review, chairman_reviews=expected_chairman_reviews)
-    serve(sys.argv[1], async_transport=partial(controlled_provider, classifier=classifier))
+    serve(sys.argv[1], async_transport=controlled_ui06_provider)
