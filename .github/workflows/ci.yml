@@ -70,11 +70,28 @@ jobs:
       - name: Verify UI-01 detects missing sidebar and persistence
         run: .venv/bin/python tests/browser/mutations.py
 
+      - name: Run real browser acceptance (UI-02)
+        run: .venv/bin/python tests/browser/ui02.py
+
+      - name: Verify UI-02 detects key persistence, privacy and sidebar regressions
+        run: .venv/bin/python tests/browser/mutations_ui02.py
+
+      - name: Attach UI-02 sanitized browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UI-02-browser-evidence
+          path: browser-artifacts/ui02/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Attach browser acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: UI-01-browser-evidence
-          path: browser-artifacts/
+          path: |
+            browser-artifacts/
+            !browser-artifacts/ui02/
           if-no-files-found: ignore
           retention-days: 7

@@ -12,7 +12,8 @@ def build():
                    env={**os.environ, "LLM_COUNCIL_DESKTOP_BUILD": "1"}, check=True)
 
 
-def verify_mutation(name, file, before, after, expected, rebuild=False):
+def verify_mutation(name, file, before, after, expected, rebuild=False, *,
+                    script="ui01.py", run_var="UI01_RUN"):
     path = ROOT / file
     original = path.read_bytes()
     source = original.decode("utf-8")
@@ -21,12 +22,12 @@ def verify_mutation(name, file, before, after, expected, rebuild=False):
         path.write_text(source.replace(before, after), encoding="utf-8")
         if rebuild:
             build()
-        result = subprocess.run([sys.executable, str(Path(__file__).with_name("ui01.py"))],
-                                cwd=ROOT, env={**os.environ, "UI01_RUN": name},
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name(script))],
+                                cwd=ROOT, env={**os.environ, run_var: name},
                                 capture_output=True, text=True, timeout=120)
         print(result.stdout + result.stderr, flush=True)
         assert result.returncode != 0 and expected in result.stderr, f"Mutation not detected at intended assertion: {name}"
-        print(f"UI01 negative control detected: {name}", flush=True)
+        print(f"{run_var.removesuffix('_RUN')} negative control detected: {name}", flush=True)
     finally:
         path.write_bytes(original)
         if rebuild:
