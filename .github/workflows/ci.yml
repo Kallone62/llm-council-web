@@ -19,7 +19,7 @@ jobs:
           python-version: "3.10"
 
       - name: Install Python dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra browser
 
       - name: Verify exact patched native engine package
         run: .venv/bin/python -c "from importlib.metadata import version; import llm_council; assert version('llm-council-core') == llm_council.__version__ == '0.53.0+eng31.1'"
@@ -50,3 +50,27 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+      - name: Install Chromium for browser acceptance
+        run: .venv/bin/python -m playwright install --with-deps chromium
+
+      - name: Build desktop frontend for browser acceptance
+        working-directory: frontend
+        env:
+          LLM_COUNCIL_DESKTOP_BUILD: "1"
+        run: npm run build
+
+      - name: Run real browser acceptance (UI-01)
+        run: .venv/bin/python tests/browser/ui01.py
+
+      - name: Verify UI-01 detects missing sidebar and persistence
+        run: .venv/bin/python tests/browser/mutations.py
+
+      - name: Attach browser acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UI-01-browser-evidence
+          path: browser-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
