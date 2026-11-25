@@ -8,6 +8,7 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 from serve_ui09 import CHAIRMAN, HTTP_ERROR, JOURNAL, LONG_QUESTION, OLD_ANSWER, QUESTION, SSE_ERROR, TITLE_MODEL
+from stream_observer_ui09 import STREAM_CAPTURE
 from ui01 import BASE, DIST, EXISTING, ROOT, is_response, isolated_server, json_response, observed_browser
 from ui04 import configure
 
@@ -79,12 +80,9 @@ def scenario(page, client, data, work, output, network, errors, forbidden, case)
         expect(page.locator(".loading-indicator")).to_be_visible()
         expect(page.get_by_role("button", name="Send", exact=True)).to_be_disabled()
         (work / "release-memory").touch()
-        evidence = [json.loads(line[6:]) for line in response.body().decode("utf-8").splitlines() if line.startswith("data: ")]
-        assert [event["type"] for event in evidence] == ["engine_progress", "engine_progress", "error"]
-        assert [(e["data"]["stage"], e["data"]["state"]) for e in evidence[:2]] == [("memory", "started"), ("memory", "failed")]
-        assert evidence[-1] == {"type": "error", "message": SSE_ERROR}
+        # The production client cancels its reader on a terminal error. Chromium
+        # may discard the response body, so observe the actual ASGI send bytes.
         message = SSE_ERROR
-    (output / "response.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
     expect(page.locator(".council-error"), "UI09: meaningful error missing").to_have_count(1)
     expect(page.locator(".council-error"), "UI09: meaningful error missing").to_be_visible()
     expect(page.locator(".council-error strong")).to_have_text("Council request failed")
@@ -115,6 +113,15 @@ def scenario(page, client, data, work, output, network, errors, forbidden, case)
     expect(page.locator(".council-error")).to_have_count(0)
     assert_persistence(client, data, before)
     assert json_response(client.put("/api/settings", json={"profile": "quick"}))["profile"] == "quick"
+    if case == "sse":
+        evidence = [json.loads(line[6:]) for line in (work / STREAM_CAPTURE).read_text(encoding="utf-8").splitlines()
+                    if line.startswith("data: ")]
+        assert [event["type"] for event in evidence] == ["engine_progress", "engine_progress", "error"]
+        assert [(e["data"]["stage"], e["data"]["state"]) for e in evidence[:2]] == [("memory", "started"), ("memory", "failed")]
+        assert evidence[-1] == {"type": "error", "message": SSE_ERROR}
+    else:
+        assert not (work / STREAM_CAPTURE).exists(), "UI09: HTTP rejection unexpectedly produced SSE"
+    (output / "response.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
     allowed = {"Failed to send message: Error: " + message, "Failed to send message: " + message}
     if case == "sse":
         allowed.add("Stream error: " + message)
@@ -147,8 +154,9 @@ def main():
                             with observed_browser(browser, output) as (page, network, errors, forbidden):
                                 scenario(page, client, data, work, output, network, errors, forbidden, case)
                     finally:
-                        if (work / JOURNAL).is_file():
-                            shutil.copyfile(work / JOURNAL, output / JOURNAL)
+                        for artifact in (JOURNAL, STREAM_CAPTURE):
+                            if (work / artifact).is_file():
+                                shutil.copyfile(work / artifact, output / artifact)
                 print(f"UI09 PASS: {case}", flush=True)
         finally:
             browser.close()
