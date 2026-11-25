@@ -145,6 +145,37 @@ def calculate_weighted_score_with_accuracy_ceiling(
     return round(min(base_score, ceiling), 2)
 
 
+def is_valid_rubric_evaluation(parsed: Any, valid_labels) -> bool:
+    """Validate extracted model data before using it as a scored rubric ballot.
+
+    A partial ballot may be valid, but every ranked label needs all five
+    dimensions and no unranked label may contribute an evaluation. Invalid
+    rubrics use the existing holistic parser; never invent missing scores.
+    """
+    if not isinstance(parsed, dict):
+        return False
+    ranking, evaluations = parsed.get("ranking"), parsed.get("evaluations")
+    if not isinstance(ranking, list) or not ranking or not isinstance(evaluations, dict):
+        return False
+    if any(not isinstance(label, str) or label not in valid_labels for label in ranking):
+        return False
+    if len(set(ranking)) != len(ranking) or set(evaluations) != set(ranking):
+        return False
+    for entry in evaluations.values():
+        if not isinstance(entry, dict):
+            return False
+        for dimension in REQUIRED_DIMENSIONS:
+            value = entry.get(dimension)
+            if type(value) not in (int, float) or not 1 <= value <= 10:
+                return False
+    # Optional evaluation metadata is preserved, but must be JSON-safe too.
+    try:
+        json.dumps(evaluations, allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        return False
+    return True
+
+
 def parse_rubric_evaluation(response_text: str) -> Optional[Dict[str, Any]]:
     """Parse rubric evaluation JSON from a model response.
 
