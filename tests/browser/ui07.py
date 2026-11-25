@@ -203,7 +203,7 @@ def submit_round(page, client, case):
     detail = f"/api/conversations/{cid}"
     entry = page.get_by_placeholder("Ask a question or continue this conversation... (Shift+Enter for new line)")
     expect(entry).to_be_editable()
-    page.get_by_label("Mode", exact=True).select_option(case.mode)
+    page.get_by_role("combobox", name="Mode", exact=True).select_option(case.mode)
     if case.dissent:
         page.get_by_label("Include dissent", exact=True).check()
     entry.fill(QUESTION)
