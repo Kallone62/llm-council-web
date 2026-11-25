@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 
 from serve import serve
+from stream_observer_ui09 import observe_stream
 from serve_ui04 import CHAIRMAN, KEY, TITLE_MODEL
 
 LONG_QUESTION = "Retain the original archive. " * 250
@@ -52,4 +53,4 @@ async def memory_failure(_transport, request):
 if __name__ == "__main__":
     if not os.environ.get("LLM_COUNCIL_UI_DATA_DIR") or not os.environ.get("LLM_COUNCIL_CONFIG"):
         raise RuntimeError("Run the isolated browser harness, not the server directly")
-    serve(sys.argv[1], async_transport=memory_failure)
+    serve(sys.argv[1], async_transport=memory_failure, wrap_app=observe_stream)
