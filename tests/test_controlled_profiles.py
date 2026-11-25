@@ -140,7 +140,7 @@ def assert_profile(payload, profile, multiplier):
     assert cfg.timeouts.get_timeout(profile, "total") == total * multiplier * 1000
 
 
-def decode_response(response, stream, *, expected_title=TITLE):
+def decode_response(response, stream, *, expected_title=TITLE, expected_review_state='completed'):
     assert response.status_code == 200, response.text
     if not stream:
         return response.json()
@@ -152,7 +152,7 @@ def decode_response(response, stream, *, expected_title=TITLE):
     progress = [e["data"] for e in events[:-5]]
     assert [(e["stage"], e["state"]) for e in progress] == [
         (stage, state) for stage in ("stage1", "stage1_5", "stage2", "stage3")
-        for state in ("started", "completed")]
+        for state in ("started", expected_review_state if stage == "stage2" else "completed")]
     metadata = events[-2]["metadata"]
     assert events[-4]["metadata"] == events[-3]["metadata"] == metadata
     assert metadata["ui_runtime_progress"] == progress
