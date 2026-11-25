@@ -331,6 +331,16 @@ OpenRouter / selected models
 
 There is no separate council adapter service and no second implementation of the decision algorithm.
 
+### Quality metric metadata
+
+The REST and SSE responses and saved conversation metadata may include Amiable's `quality_metrics`. The current React interface does not display these scores. They are diagnostics, not a correctness or confidence guarantee:
+
+- CSS (`consensus_strength`) summarizes the distribution of aggregate rank positions, not reviewer-by-reviewer agreement; identical average positions can yield 1.0 even when reviewers disagree.
+- DDI (`deliberation_depth`) combines lexical diversity, returned-review coverage (not valid vote coverage), and critique length. Formatting and invalid review text can affect it.
+- SAS (`synthesis_attribution`) uses Jaccard word-set overlap with Stage 1 responses. The native `hallucination_risk` is one minus maximum overlap, and `grounded` means overlap of at least 0.6, not independently verified factual accuracy. A copied false claim can have perfect overlap.
+
+The web application preserves the native field names and formulas. When metric projection cannot be completed, `quality_metrics` is null rather than an uncorrected native estimate; disabled or absent metrics remain absent. The Council answer and review results remain available. Only the synchronous core calculations are accepted here; a configured higher tier label does not establish embedding-based or factual verification. Previously saved conversations are not retroactively recalculated.
+
 ## Why multi-model deliberation can be useful
 
 This project does **not** claim that a council is always correct or that multiple models eliminate hallucinations. Multiple models can share the same blind spot. The useful idea is that independent generation, peer review, ranking and explicit dissent can expose disagreement and reduce dependence on a single model response.
