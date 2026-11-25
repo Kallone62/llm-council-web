@@ -12,7 +12,7 @@ from llm_council import council
 from llm_council.unified_config import reload_config
 
 from backend import engine_runtime
-from test_controlled_gateway_fallback import CHAIRMAN, KEYS, MODELS, PRIMARY, TITLE_MODEL, gateway_config
+from test_controlled_gateway_fallback import CHAIRMAN, MODELS, TITLE_MODEL, decode_openrouter_review_request, gateway_config
 
 QUESTION = 'ENG29: Compare the composition of the Moon.'
 TITLE = 'Moon Composition'
@@ -37,11 +37,7 @@ def install_provider(path, monkeypatch):
     calls, ballots = [], {}
 
     async def handle(_transport, request):
-        assert (request.method, str(request.url), request.headers.get('authorization')) == (
-            'POST', PRIMARY, f'Bearer {KEYS[PRIMARY]}')
-        body = json.loads(request.content)
-        model, prompt = body['model'], body['messages'][-1]['content']
-        assert QUESTION in prompt
+        model, prompt = decode_openrouter_review_request(request, QUESTION)
         if prompt == QUESTION:
             stage, answer = 'stage1', ANSWERS[model]
         elif '<responses_to_evaluate>' in prompt:
