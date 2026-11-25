@@ -41,6 +41,8 @@ def isolated_server(work, output):
     env.update(HOME=str(home), LLM_COUNCIL_CONFIG=str(config),
                LLM_COUNCIL_UI_DATA_DIR=str(data), OPENROUTER_API_KEY="")
     with socket.socket() as probe:
+        # A prior isolated server may leave loopback connections in TIME_WAIT.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("127.0.0.1", 8001))
     log = output / "backend.log"
     with log.open("w", encoding="utf-8") as handle:
