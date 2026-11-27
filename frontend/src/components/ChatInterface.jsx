@@ -134,6 +134,13 @@ export default function ChatInterface({
                     </div>
                   )}
 
+                  {msg.metadata?.cache_hit === true && (
+                    <div className="engine-progress" role="note">
+                      <strong>Cached Council result:</strong>{' '}
+                      Individual models were not run again for this result.
+                    </div>
+                  )}
+
                   {(msg.engineProgress?.length > 0 || msg.metadata?.ui_runtime_progress?.length > 0) && (
                     <div className="engine-progress" aria-live="polite">
                       <strong>Live engine progress</strong>
