@@ -10,6 +10,7 @@ from mutations import ROOT, verify_mutation
 MUTATIONS = (
     ("wrong-synthesis", "synthesis", "Stage3", "<ReactMarkdown>{finalResponse.response}</ReactMarkdown>", "<ReactMarkdown>{'Wrong synthesis'}</ReactMarkdown>", "UI07: final synthesis mismatch"),
     ("missing-peer-warning", "partial", "Stage2", "{notice && <p", "{false && notice && <p", "UI07: peer warning missing"),
+    ("hidden-empty-review", "empty-review", "Stage2", "if (!current && !notice)", "if (!current)", "UI07: peer warning missing"),
     ("missing-verdict", "binary-dissent", "Stage3", "{!failed && verdict && (", "{false && verdict && (", "UI07: verdict missing"),
     ("wrong-confidence", "binary-dissent", "Stage3", "(verdict.confidence * 100).toFixed(0)", "(verdict.confidence * 10).toFixed(0)", "UI07: confidence mismatch"),
     ("missing-dissent", "binary-dissent", "Stage3", "{verdict.dissent && (", "{false && (", "UI07: dissent missing or wrong"),
