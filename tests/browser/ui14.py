@@ -11,7 +11,7 @@ from playwright.sync_api import expect, sync_playwright
 
 from serve_ui14 import MODELS, KEY, NEW_KEY, QUESTION, JOURNAL, CATALOG, ENDPOINT, REVIEW, FINAL, candidate
 from ui01 import BASE, DIST, ROOT, EXISTING, isolated_server, observed_browser, is_response, json_response
-from ui03 import SETTINGS, assert_effective, assert_disk, profile_select, check_notice, NOTICE, PROFILES
+from ui03 import SETTINGS, assert_disk, profile_select, check_notice, NOTICE, PROFILES
 from ui04 import progress_locator, EXPECTED_PROGRESS
 
 ARTIFACTS = ROOT / "browser-artifacts" / "ui14" / os.getenv("UI14_RUN", "normal")
@@ -23,7 +23,7 @@ def journal(work):
     path = work / JOURNAL
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n")[:-1] if line]
 
 
 def assert_safe(rows):
