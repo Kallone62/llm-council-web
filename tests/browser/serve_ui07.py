@@ -119,16 +119,16 @@ def chairman_reply(case, model, prompt):
     return 401 if case.failure == "auth" else 200, case.final_content
 
 
-def classify(case, request):
+def classify(case, request, *, question=QUESTION, title=TITLE):
     assert (request.method, str(request.url), request.headers.get("authorization")) == (
         "POST", "https://openrouter.ai/api/v1/chat/completions", f"Bearer {KEY}")
     body = json.loads(request.content)
     model, prompt = body["model"], body["messages"][-1]["content"]
-    assert QUESTION in prompt
+    assert question in prompt
     if prompt.startswith("Generate a very short title"):
         assert model == TITLE_MODEL
-        return "title", model, 200, TITLE
-    if prompt == QUESTION:
+        return "title", model, 200, title
+    if prompt == question:
         assert model in MODELS
         return "stage1", model, 200 if model in case.members else 401, candidate(model)
     if "<responses_to_evaluate>" in prompt:
@@ -144,10 +144,10 @@ def journal(stage, model, code):
         handle.write(json.dumps({"stage": stage, "model": model, "status": code}) + "\n")
 
 
-async def controlled_ui07_provider(_transport, request):
+async def controlled_ui07_provider(_transport, request, *, question=QUESTION, title=TITLE):
     try:
         case = CASES[Path(SCENARIO).read_text(encoding="utf-8")]
-        stage, model, code, content = classify(case, request)
+        stage, model, code, content = classify(case, request, question=question, title=title)
     except (AssertionError, KeyError, ValueError, TypeError, IndexError, OSError):
         journal("rejected", "unknown", 0)
         raise AssertionError("UI07: unexpected provider request") from None
