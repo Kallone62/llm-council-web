@@ -109,7 +109,11 @@ jobs:
       - name: Run real browser acceptance (UI-08)
         run: .venv/bin/python tests/browser/ui08.py
 
-      - name: Verify UI-08 detects missing, foreign, failed and rewritten history
+      - name: Run real browser acceptance (UI-08 rolling memory)
+        timeout-minutes: 3
+        run: .venv/bin/python tests/browser/ui08_memory.py
+
+      - name: Verify UI-08 detects history and rolling-memory regressions
         run: .venv/bin/python tests/browser/mutations_ui08.py
 
       - name: Run real browser acceptance (UI-09)

@@ -21,5 +21,24 @@ def main():
                    env={**os.environ, "UI08_RUN": "restored"}, check=True, timeout=120)
 
 
+    # Successful rolling memory and reuse have their own browser oracle.
+    memory_mutations = (
+        ("wrong-memory-progress", "frontend/src/components/ChatInterface.jsx",
+         "    : item.state === 'completed' ? 'completed'",
+         "    : item.state === 'completed' ? (item.stage === 'memory' ? 'failed' : 'completed')",
+         "UI08-memory: completed summary not visible", True),
+        ("lost-summary", "backend/storage.py", '    conversation["context_memory"] = memory',
+         "    pass  # Mutation: drop the new summary", "UI08-memory: persisted summary mismatch", False),
+        ("resummarize-cached-history", "backend/conversation_context.py",
+         "    if len(history) <= MAX_HISTORY_CHARS:", "    if len(history) <= MAX_HISTORY_CHARS and not memory:",
+         "UI08-memory: cached summary invoked provider", False),
+    )
+    for name, path, before, after, marker, rebuild in memory_mutations:
+        verify_mutation(name, path, before, after, marker, rebuild=rebuild,
+                        script="ui08_memory.py", run_var="UI08_MEMORY_RUN")
+    subprocess.run([sys.executable, str(Path(__file__).with_name("ui08_memory.py"))], cwd=ROOT,
+                   env={**os.environ, "UI08_MEMORY_RUN": "memory-restored"}, check=True, timeout=120)
+
+
 if __name__ == "__main__":
     main()
