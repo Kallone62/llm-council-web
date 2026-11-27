@@ -31,6 +31,7 @@ class Case:
     dissent: bool = False
     tied: bool = False
     failure: str = ""
+    empty_reviews: bool = False
 
     @property
     def effective_mode(self):
@@ -64,6 +65,7 @@ CASES = {case.name: case for case in (
     Case("synthesis"), Case("binary-dissent", "binary", dissent=True),
     Case("explicit-tie", "tie_breaker"), Case("auto-tie", "binary", tied=True),
     Case("partial", "binary", "partial"), Case("failed-review", "binary", "failed"),
+    Case("empty-review", peer="failed", empty_reviews=True),
     Case("skipped-review", "binary", "skipped"),
     Case("empty", failure="empty"), Case("whitespace", "binary", failure="whitespace"),
     Case("null", "tie_breaker", failure="null"), Case("chairman-auth", "binary", failure="auth"),
@@ -105,7 +107,7 @@ def observe_mapping(prompt):
 
 def chairman_reply(case, model, prompt):
     assert model == CHAIRMAN and case.members and "AGGREGATE RANKINGS" in prompt
-    if case.peer != "skipped":
+    if case.peer != "skipped" and not case.empty_reviews:
         mapping = json.loads(Path(MAPPING).read_text(encoding="utf-8"))
         assert all(review(case, member, mapping) in prompt for member in MODELS)
     if case.effective_mode == "tie_breaker":
@@ -133,7 +135,10 @@ def classify(case, request, *, question=QUESTION, title=TITLE):
         return "stage1", model, 200 if model in case.members else 401, candidate(model)
     if "<responses_to_evaluate>" in prompt:
         assert model in MODELS and len(case.members) == len(MODELS)
-        return "stage2", model, 200, review(case, model, observe_mapping(prompt))
+        mapping = observe_mapping(prompt)
+        if case.empty_reviews:
+            return "stage2", model, 503, None
+        return "stage2", model, 200, review(case, model, mapping)
     assert prompt.startswith("You are the Chairman")
     code, content = chairman_reply(case, model, prompt)
     return "stage3", model, code, content
