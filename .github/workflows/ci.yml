@@ -252,5 +252,6 @@ jobs:
             !browser-artifacts/ui09/
             !browser-artifacts/ui10/
             !browser-artifacts/ui11/
+            !browser-artifacts/ui12/
           if-no-files-found: ignore
           retention-days: 7
