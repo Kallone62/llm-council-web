@@ -73,9 +73,17 @@ def assert_peer_result(case, payload, work):
     if case.peer in ("skipped", "not_run"):
         assert not reviews and not (work / MAPPING).exists()
         return
-    assert len(reviews) == len(MODELS) and {r["model"] for r in reviews} == set(MODELS)
     mapping = json.loads((work / MAPPING).read_text(encoding="utf-8"))
     assert {label: item["model"] for label, item in metadata["label_to_model"].items()} == mapping
+    if case.empty_reviews:
+        assert reviews == [] and peer["reviews"] == 0 and peer["ranked_candidates"] == 0, "UI07: empty peer review misclassified"
+        aggregate = metadata["aggregate_rankings"]
+        assert {row["model"] for row in aggregate} == set(MODELS) and len(aggregate) == len(MODELS)
+        assert all(row["vote_count"] == 0 for row in aggregate) and metadata.get("quality_metrics") is None
+        stage2_end = [e for e in metadata["ui_runtime_progress"] if e["stage"] == "stage2"][-1]
+        assert stage2_end["state"] == "failed" and stage2_end["reviews"] == 0
+        return
+    assert len(reviews) == len(MODELS) and {r["model"] for r in reviews} == set(MODELS)
     for row in reviews:
         expected = ballot(case, row["model"], mapping)
         assert row["ranking"] == review(case, row["model"], mapping)
@@ -122,7 +130,7 @@ def assert_provider(case, work):
     rows = [json.loads(line) for line in (work / JOURNAL).read_text(encoding="utf-8").splitlines()]
     expected = [("title", TITLE_MODEL, 200)] + [("stage1", m, 200 if m in case.members else 401) for m in MODELS]
     if len(case.members) == len(MODELS):
-        expected.extend(("stage2", m, 200) for m in MODELS)
+        expected.extend(("stage2", m, 503 if case.empty_reviews else 200) for m in MODELS)
     if case.members:
         expected.append(("stage3", CHAIRMAN, 401 if case.failure == "auth" else 200))
     actual = [(r["stage"], r["model"], r["status"]) for r in rows]
@@ -187,6 +195,9 @@ def assert_warnings(page, case):
         expect(warning, "UI07: peer warning mismatch").to_have_text(WARNINGS[case.peer])
     else:
         expect(page.locator(".stage2 [role=alert], .stage2 [role=note]")).to_have_count(0)
+    if case.empty_reviews:
+        expect(page.locator(".stage2 .tabs, .stage2 .parsed-ranking, .stage2 .aggregate-rankings"), "UI07: empty review displayed rankings").to_have_count(0)
+        expect(page.locator(".stage2").get_by_role("heading", name="Raw Evaluations", exact=True)).to_have_count(0)
     if case.peer == "skipped":
         expect(page.get_by_role("status").filter(has_text="Partial Council result:")).to_contain_text("1 of 4 configured models")
 
