@@ -144,6 +144,22 @@ jobs:
       - name: Verify UI-13 detects profile and Free feature boundary regressions
         run: .venv/bin/python tests/browser/mutations_ui13.py
 
+      - name: Run real browser acceptance (UI-14)
+        timeout-minutes: 3
+        run: .venv/bin/python tests/browser/ui14.py
+
+      - name: Verify UI-14 detects active-run settings and Free routing regressions
+        run: .venv/bin/python tests/browser/mutations_ui14.py
+
+      - name: Attach UI-14 browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UI-14-browser-evidence
+          path: browser-artifacts/ui14/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Attach UI-13 browser evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -271,5 +287,6 @@ jobs:
             !browser-artifacts/ui11/
             !browser-artifacts/ui12/
             !browser-artifacts/ui13/
+            !browser-artifacts/ui14/
           if-no-files-found: ignore
           retention-days: 7
