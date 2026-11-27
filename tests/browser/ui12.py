@@ -1,11 +1,13 @@
 """UI-12: real browser deletion, confirmation, stale-row failure and disk isolation."""
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
+from serve_ui12 import CAPTURE
 from ui01 import BASE, DIST, ROOT, is_response, isolated_server, json_response, observed_browser
 
 ARTIFACTS = ROOT / "browser-artifacts" / "ui12" / os.getenv("UI12_RUN", "normal")
@@ -124,12 +126,15 @@ def stale_delete(page, client, data, work, before):
     assert_storage(client, data, before, RECORDS)
 
 
-def successful_delete(page, client, data, before, target, remaining):
+def successful_delete(page, client, data, work, before, target, remaining):
     with page.expect_response(lambda r: r.request.method == "DELETE") as deleted:
         click_delete(page, target, True)
     response = deleted.value
     assert is_response(response, "DELETE", detail(target)), "UI12: DELETE addressed the wrong conversation"
-    assert response.status == 204 and response.body() == b"", "UI12: DELETE did not return empty 204"
+    assert response.status == 204, "UI12: DELETE did not return 204"
+    assert response.finished() is None
+    captured = [json.loads(line) for line in (work / CAPTURE).read_text(encoding="utf-8").splitlines()]
+    assert captured[-1] == {"path": detail(target), "status": 204, "body_hex": ""}, "UI12: DELETE did not return empty 204"
     after = assert_deleted(client, data, before, target, remaining)
     expect(select_button(page, target), "UI12: deleted conversation still in sidebar").to_have_count(0)
     expect(delete_button(page, target)).to_have_count(0)
@@ -162,9 +167,9 @@ def scenario(page, client, data, work, output, network, errors, forbidden):
     open_record(page, A)
     cancel_delete(page, client, data, before, requests)
     stale_delete(page, client, data, work, before)
-    before = successful_delete(page, client, data, before, B, (A, C))
+    before = successful_delete(page, client, data, work, before, B, (A, C))
     assert_selected(page, A)
-    before = successful_delete(page, client, data, before, A, (C,))
+    before = successful_delete(page, client, data, work, before, A, (C,))
     expect(page.get_by_role("heading", name="Welcome to LLM Council"), "UI12: deleted active chat remained open").to_be_visible()
     expect(page.locator(".user-message, .assistant-message, .message-input")).to_have_count(0)
     expect(page.locator(".conversation-select[aria-current=page]")).to_have_count(0)
@@ -199,13 +204,15 @@ def main():
         executable = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
         browser = playwright.chromium.launch(headless=True, **({"executable_path": executable} if executable else {}))
         try:
-            with isolated_server(work, ARTIFACTS) as (client, data):
+            with isolated_server(work, ARTIFACTS, server_script="serve_ui12.py") as (client, data):
                 for record in RECORDS:
                     (data / filename(record)).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
                 with observed_browser(browser, ARTIFACTS) as (page, network, errors, forbidden):
                     scenario(page, client, data, work, ARTIFACTS, network, errors, forbidden)
         finally:
             browser.close()
+            if (work / CAPTURE).is_file():
+                shutil.copyfile(work / CAPTURE, ARTIFACTS / CAPTURE)
     print("UI12 PASS: cancel, real 404, active/non-active deletion, reload and preserved other record", flush=True)
 
 
