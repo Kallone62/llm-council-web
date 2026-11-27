@@ -24,22 +24,29 @@ QUESTIONS = {"summary": "UI08 memory: Which archive is retained?",
 
 
 def classify(request):
-    assert (request.method, str(request.url), request.headers.get("authorization")) == (
-        "POST", "https://openrouter.ai/api/v1/chat/completions", f"Bearer {KEY}")
+    if (request.method, str(request.url), request.headers.get("authorization")) != (
+            "POST", "https://openrouter.ai/api/v1/chat/completions", f"Bearer {KEY}"):
+        raise ValueError("Unexpected provider request target or authorization")
     body = json.loads(request.content)
     model, prompt = body["model"], body["messages"][-1]["content"]
     if body["messages"][0]["role"] == "system" and "You maintain concise, faithful memory" in body["messages"][0]["content"]:
-        assert model == TITLE_MODEL
-        assert request.extensions["timeout"] == dict.fromkeys(("connect", "read", "write", "pool"), 45.0)
+        if model != TITLE_MODEL:
+            raise ValueError("Unexpected summary model")
+        if request.extensions["timeout"] != dict.fromkeys(("connect", "read", "write", "pool"), 45.0):
+            raise ValueError("Unexpected summary timeout")
         return "memory", model, prompt, SUMMARY
     if "<responses_to_evaluate>" in prompt:
-        assert model in MODELS and all(candidate(m) in prompt for m in MODELS)
+        if model not in MODELS or not all(candidate(m) in prompt for m in MODELS):
+            raise ValueError("Unexpected review model or candidates")
         return "stage2", model, prompt, REVIEW
     if prompt.startswith("You are the Chairman of an LLM Council."):
-        assert model == CHAIRMAN and all(candidate(m) in prompt for m in MODELS)
-        assert REVIEW in prompt and "AGGREGATE RANKINGS" in prompt
+        if model != CHAIRMAN or not all(candidate(m) in prompt for m in MODELS):
+            raise ValueError("Unexpected Chairman model or candidates")
+        if REVIEW not in prompt or "AGGREGATE RANKINGS" not in prompt:
+            raise ValueError("Missing Chairman review or aggregate rankings")
         return "stage3", model, prompt, FINAL
-    assert model in MODELS
+    if model not in MODELS:
+        raise ValueError("Unexpected candidate model")
     return "stage1", model, prompt, candidate(model)
 
 
@@ -51,7 +58,8 @@ def journal(round_id, stage, model, prompt):
 async def provider(_transport, request):
     try:
         round_id = Path(ROUND).read_text(encoding="utf-8")
-        assert round_id in QUESTIONS
+        if round_id not in QUESTIONS:
+            raise ValueError("Unexpected rolling-memory round")
         stage, model, prompt, content = classify(request)
     except (AssertionError, KeyError, ValueError, TypeError, IndexError, OSError):
         journal("unknown", "rejected", "unknown", "")
@@ -60,7 +68,8 @@ async def provider(_transport, request):
     if stage == "memory":
         deadline = asyncio.get_running_loop().time() + 25
         while not Path(RELEASE).is_file():
-            assert asyncio.get_running_loop().time() < deadline, "UI08-memory: summary gate timed out"
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("UI08-memory: summary gate timed out")
             await asyncio.sleep(.02)
     return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": content}}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18, "cost": 0.0125}})
