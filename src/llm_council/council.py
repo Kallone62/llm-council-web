@@ -975,7 +975,10 @@ async def run_full_council(
         )
 
     # Check cache first (unless bypassed)
-    cache_key = get_cache_key(user_query)
+    cache_key = get_cache_key(
+        user_query, verdict_type=verdict_type, include_dissent=include_dissent,
+        per_model_timeout=per_model_timeout,
+    )
     if _get_cache_enabled() and not bypass_cache:
         cached = get_cached_response(cache_key)
         if cached:
