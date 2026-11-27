@@ -130,6 +130,21 @@ jobs:
       - name: Verify UI-11 detects lost history, corrupt neighbour deletion and wrong reload presentation
         run: .venv/bin/python tests/browser/mutations_ui11.py
 
+      - name: Run real browser acceptance (UI-12)
+        run: .venv/bin/python tests/browser/ui12.py
+
+      - name: Verify UI-12 detects deletion, confirmation and retained-data regressions
+        run: .venv/bin/python tests/browser/mutations_ui12.py
+
+      - name: Attach UI-12 browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UI-12-browser-evidence
+          path: browser-artifacts/ui12/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Attach UI-11 browser evidence
         if: always()
         uses: actions/upload-artifact@v4
