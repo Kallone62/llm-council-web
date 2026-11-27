@@ -70,47 +70,61 @@ def _max_reviewers():
     return _get_council_config().max_reviewers
 
 
-# Module-level aliases for backwards compatibility with tests
-CACHE_ENABLED = _cache_enabled()
-CACHE_TTL = _cache_ttl()
-CACHE_DIR = _cache_dir()
-COUNCIL_MODELS = _council_models()
-CHAIRMAN_MODEL = _chairman_model()
-SYNTHESIS_MODE = _synthesis_mode()
-EXCLUDE_SELF_VOTES = _exclude_self_votes()
-STYLE_NORMALIZATION = _style_normalization()
-MAX_REVIEWERS = _max_reviewers()
+# Keep legacy attribute access and explicit test overrides, but do not snapshot
+# configuration at import time: the web application reloads it while running.
+_CONFIG_ACCESSORS = {
+    "CACHE_ENABLED": _cache_enabled,
+    "CACHE_TTL": _cache_ttl,
+    "CACHE_DIR": _cache_dir,
+    "COUNCIL_MODELS": _council_models,
+    "CHAIRMAN_MODEL": _chairman_model,
+    "SYNTHESIS_MODE": _synthesis_mode,
+    "EXCLUDE_SELF_VOTES": _exclude_self_votes,
+    "STYLE_NORMALIZATION": _style_normalization,
+    "MAX_REVIEWERS": _max_reviewers,
+}
 
 
-def get_cache_key(query: str) -> str:
-    """Generate deterministic cache key from query and configuration.
+def _effective(name):
+    return globals()[name] if name in globals() else _CONFIG_ACCESSORS[name]()
 
-    The cache key incorporates all configuration that affects the response:
-    - Query text
-    - Council model list (sorted for determinism)
-    - Chairman model
-    - Synthesis mode
-    - Self-vote exclusion setting
-    - Style normalization setting
-    - Max reviewers setting
 
-    Args:
-        query: The user's query
+def __getattr__(name):
+    if name in _CONFIG_ACCESSORS:
+        return _effective(name)
+    raise AttributeError(name)
 
-    Returns:
-        16-character hex hash suitable for use as filename
+
+def get_cache_key(query: str, *, verdict_type="synthesis", include_dissent=False,
+                  per_model_timeout=None) -> str:
+    """Key the response by the query and current response-affecting settings.
+
+    The schema marker prevents reuse of entries made before verdict/dissent
+    and runtime configuration were included in the key. No credentials are
+    included. Cache enablement, directory and TTL govern storage, not identity.
     """
+    config = get_config()
+    gateway = config.gateways
     cache_input = {
+        "schema": 2,
         "query": query,
-        "council_models": sorted(COUNCIL_MODELS),
-        # #725: the chairman depends on the tier in scope, so resolve it per
-        # key (CHAIRMAN_MODEL is an import-time snapshot) and key on the tier.
+        "council_models": sorted(_effective("COUNCIL_MODELS")),
         "chairman": _chairman_model(),
+        "chairman_disabled": config.council.chairman_disabled,
         "tier": current_tier(),
-        "synthesis_mode": SYNTHESIS_MODE,
-        "exclude_self_votes": EXCLUDE_SELF_VOTES,
-        "style_normalization": STYLE_NORMALIZATION,
-        "max_reviewers": MAX_REVIEWERS,
+        "synthesis_mode": _effective("SYNTHESIS_MODE"),
+        "exclude_self_votes": _effective("EXCLUDE_SELF_VOTES"),
+        "style_normalization": _effective("STYLE_NORMALIZATION"),
+        "normalizer_model": config.council.normalizer_model,
+        "max_reviewers": _effective("MAX_REVIEWERS"),
+        "verdict_type": getattr(verdict_type, "value", verdict_type),
+        "include_dissent": include_dissent,
+        "per_model_timeout": per_model_timeout,
+        "evaluation": config.evaluation.model_dump(mode="json"),
+        "gateway": gateway.default,
+        "model_routing": gateway.model_routing,
+        "model_name_map": gateway.model_name_map,
+        "fallback": gateway.fallback.model_dump(mode="json"),
     }
     serialized = json.dumps(cache_input, sort_keys=True)
     return hashlib.sha256(serialized.encode()).hexdigest()[:16]
@@ -125,10 +139,10 @@ def get_cached_response(cache_key: str) -> Optional[Dict[str, Any]]:
     Returns:
         Cached response dict if valid cache hit, None otherwise
     """
-    if not CACHE_ENABLED:
+    if not _effective("CACHE_ENABLED"):
         return None
 
-    cache_file = CACHE_DIR / f"{cache_key}.json"
+    cache_file = _effective("CACHE_DIR") / f"{cache_key}.json"
 
     if not cache_file.exists():
         return None
@@ -138,9 +152,10 @@ def get_cached_response(cache_key: str) -> Optional[Dict[str, Any]]:
             cached = json.load(f)
 
         # Check TTL if configured
-        if CACHE_TTL > 0:
+        ttl = _effective("CACHE_TTL")
+        if ttl > 0:
             cached_at = cached.get("_cached_at", 0)
-            if time.time() - cached_at > CACHE_TTL:
+            if time.time() - cached_at > ttl:
                 # Cache expired, delete file
                 cache_file.unlink(missing_ok=True)
                 return None
@@ -168,13 +183,13 @@ def save_to_cache(
         stage3_result: Result from Stage 3
         metadata: Response metadata
     """
-    if not CACHE_ENABLED:
+    if not _effective("CACHE_ENABLED"):
         return
 
     # Create cache directory if needed
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _effective("CACHE_DIR").mkdir(parents=True, exist_ok=True)
 
-    cache_file = CACHE_DIR / f"{cache_key}.json"
+    cache_file = _effective("CACHE_DIR") / f"{cache_key}.json"
 
     cache_data = {
         "_cached_at": time.time(),
@@ -199,11 +214,12 @@ def clear_cache() -> int:
     Returns:
         Number of cache entries deleted
     """
-    if not CACHE_DIR.exists():
+    directory = _effective("CACHE_DIR")
+    if not directory.exists():
         return 0
 
     count = 0
-    for cache_file in CACHE_DIR.glob("*.json"):
+    for cache_file in directory.glob("*.json"):
         try:
             cache_file.unlink()
             count += 1
@@ -219,23 +235,24 @@ def get_cache_stats() -> Dict[str, Any]:
     Returns:
         Dict with cache stats (entry count, total size, oldest/newest)
     """
-    if not CACHE_DIR.exists():
+    directory = _effective("CACHE_DIR")
+    if not directory.exists():
         return {
-            "enabled": CACHE_ENABLED,
+            "enabled": _effective("CACHE_ENABLED"),
             "entries": 0,
             "total_size_bytes": 0,
-            "cache_dir": str(CACHE_DIR),
+            "cache_dir": str(directory),
         }
 
-    entries = list(CACHE_DIR.glob("*.json"))
+    entries = list(directory.glob("*.json"))
     total_size = sum(f.stat().st_size for f in entries)
 
     stats = {
-        "enabled": CACHE_ENABLED,
+        "enabled": _effective("CACHE_ENABLED"),
         "entries": len(entries),
         "total_size_bytes": total_size,
-        "cache_dir": str(CACHE_DIR),
-        "ttl_seconds": CACHE_TTL if CACHE_TTL > 0 else "infinite",
+        "cache_dir": str(directory),
+        "ttl_seconds": _effective("CACHE_TTL") or "infinite",
     }
 
     if entries:
