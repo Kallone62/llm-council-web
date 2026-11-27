@@ -7,7 +7,7 @@ from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
-from serve_ui12 import CAPTURE
+from serve_ui12 import CAPTURE, captured_responses, wait_for_response
 from ui01 import BASE, DIST, ROOT, is_response, isolated_server, json_response, observed_browser
 
 ARTIFACTS = ROOT / "browser-artifacts" / "ui12" / os.getenv("UI12_RUN", "normal")
@@ -127,14 +127,13 @@ def stale_delete(page, client, data, work, before):
 
 
 def successful_delete(page, client, data, work, before, target, remaining):
+    previous_count = len(captured_responses(work))
     with page.expect_response(lambda r: r.request.method == "DELETE") as deleted:
         click_delete(page, target, True)
     response = deleted.value
     assert is_response(response, "DELETE", detail(target)), "UI12: DELETE addressed the wrong conversation"
     assert response.status == 204, "UI12: DELETE did not return 204"
-    assert response.finished() is None
-    captured = [json.loads(line) for line in (work / CAPTURE).read_text(encoding="utf-8").splitlines()]
-    assert captured[-1] == {"path": detail(target), "status": 204, "body_hex": ""}, "UI12: DELETE did not return empty 204"
+    wait_for_response(work, previous_count, {"path": detail(target), "status": 204, "body_hex": ""})
     after = assert_deleted(client, data, before, target, remaining)
     expect(select_button(page, target), "UI12: deleted conversation still in sidebar").to_have_count(0)
     expect(delete_button(page, target)).to_have_count(0)
