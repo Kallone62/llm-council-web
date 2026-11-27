@@ -158,7 +158,8 @@ async def controlled_ui07_provider(_transport, request, *, question=QUESTION, ti
         raise AssertionError("UI07: unexpected provider request") from None
     journal(stage, model, code)
     if code != 200:
-        return httpx.Response(code, json={"error": {"code": code, "message": "UI07_CONTROLLED_AUTH_FAILURE"}})
+        message = "UI07_CONTROLLED_REVIEWER_UNAVAILABLE" if code == 503 else "UI07_CONTROLLED_AUTH_FAILURE"
+        return httpx.Response(code, json={"error": {"code": code, "message": message}})
     return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": content}}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18, "cost": 0.0125}})
 
