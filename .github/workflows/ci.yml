@@ -131,6 +131,7 @@ jobs:
         run: .venv/bin/python tests/browser/mutations_ui11.py
 
       - name: Run real browser acceptance (UI-12)
+        timeout-minutes: 3
         run: .venv/bin/python tests/browser/ui12.py
 
       - name: Verify UI-12 detects deletion, confirmation and retained-data regressions
