@@ -1,0 +1,59 @@
+name: Publish authorized beta.6 test snapshot
+
+on:
+  push:
+    branches: [release/manual-beta6-test]
+    paths: [.github/workflows/publish-beta6-test.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-tested-snapshot:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Verify exact tested source and artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha=8a01cc5210a9a630362f4724cace658c1ca6fd77
+          for run in 46086325395 46086325271; do
+            gh api "repos/$GH_REPO/actions/runs/$run" | jq -e --arg sha "$source_sha" '.head_sha == $sha and .status == "completed" and .conclusion == "success"' >/dev/null
+          done
+          gh api "repos/$GH_REPO/actions/artifacts/15238234987" | jq -e --arg sha "$source_sha" '.expired == false and .workflow_run.id == 46086325271 and .workflow_run.head_sha == $sha and .name == "LLMCouncilWeb-Windows-x64"' >/dev/null
+          gh run download 46086325271 --repo "$GH_REPO" --name LLMCouncilWeb-Windows-x64 --dir package
+          cd package
+          sha=10d1a205acc51397633f50f1c95da3222dfaadaac907c21f276ea9e3d6570946
+          printf '%s  %s\n' "$sha" LLMCouncilWeb-Windows-x64.zip | sha256sum --check
+          test "$(awk '{print $1}' LLMCouncilWeb-Windows-x64.zip.sha256)" = "$sha"
+          unzip -tq LLMCouncilWeb-Windows-x64.zip
+          unzip -Z1 LLMCouncilWeb-Windows-x64.zip | grep -Fx 'LLMCouncilWeb/LLMCouncilWeb.exe'
+      - name: Publish immutable test prerelease (explicit owner exception)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.1.0-beta.6 --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite an existing release.' >&2
+            exit 1
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/v1.1.0-beta.6" >/dev/null 2>&1; then
+            echo 'Refusing to reuse an existing tag.' >&2
+            exit 1
+          fi
+          cat > notes.md <<'EOF'
+          Windows x64 test snapshot, explicitly requested by the repository owner for manual system testing. NOT final release acceptance.
+          
+          - Stages 1–3 deterministic acceptance passed: 169 backend, 744 native integration, 9 SSR, 33 SSE, UI-01–14 and 76 negative controls.
+          - Native engine: 0.53.0+eng31.1.cache1.
+          - Exact tested source: `8a01cc5210a9a630362f4724cace658c1ca6fd77`.
+          - Original Windows build: [run 46086325271](https://github.com/Kallone62/llm-council-web/actions/runs/46086325271); [Linux acceptance](https://github.com/Kallone62/llm-council-web/actions/runs/46086325395).
+          - The uploaded ZIP is the original CI artifact, not a rebuild. SHA256: `10d1a205acc51397633f50f1c95da3222dfaadaac907c21f276ea9e3d6570946`.
+          - Version tag beta.6 identifies this snapshot; embedded app version remains beta.5 and the old installer targets beta.5. Manually extract the ZIP into a separate folder and launch LLMCouncilWeb.exe after verifying the checksum. Back up existing settings/history first.
+          - Windows clean installation, upgrade, rollback, live OpenRouter/Free charges and final release gate are NOT yet accepted. The standard release workflow is unchanged; this is a one-time prerelease exception. No existing beta.5 assets are replaced.
+          EOF
+          gh release create v1.1.0-beta.6 package/LLMCouncilWeb-Windows-x64.zip package/LLMCouncilWeb-Windows-x64.zip.sha256 --repo "$GH_REPO" --target 8a01cc5210a9a630362f4724cace658c1ca6fd77 --title "LLM Council Web v1.1.0 Beta 6 (Windows test snapshot)" --prerelease --notes-file notes.md
+          gh release view v1.1.0-beta.6 --repo "$GH_REPO" --json tagName,isPrerelease,url,assets
