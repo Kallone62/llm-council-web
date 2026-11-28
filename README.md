@@ -4,7 +4,7 @@
 
 A local-first web app for people who want to try and use the LLM Council concept without needing a proprietary council subscription, a CLI workflow, or application-development experience.
 
-> **Unofficial community integration.** This project is not an official release from Andrej Karpathy or amiable-dev. It combines the original Karpathy web experience with the pinned `amiable-dev/llm-council` engine package (`llm-council-core==0.53.0+eng31.1`, a local source-patched build of Amiable 0.53.0).
+> **Unofficial community integration.** This project is not an official release from Andrej Karpathy or amiable-dev. It combines the original Karpathy web experience with the pinned `amiable-dev/llm-council` engine package (`llm-council-core==0.53.0+eng31.1.cache1`, a local source-patched build of Amiable 0.53.0).
 
 ## Why this exists
 
@@ -51,7 +51,7 @@ The app keeps Amiable's richer metadata instead of reducing it to the original s
 - Local conversation storage
 - OpenRouter key management from Settings
 - **One-click Windows launcher** and optional desktop shortcut
-- Pinned `llm-council-core==0.53.0+eng31.1` from an immutable native source commit; no automatic upstream updater
+- Pinned `llm-council-core==0.53.0+eng31.1.cache1` from an immutable native source commit; no automatic upstream updater
 
 ## Application icon
 
@@ -365,7 +365,7 @@ This integration builds on:
 - **amiable-dev — `amiable-dev/llm-council`**  
   https://github.com/amiable-dev/llm-council
 
-The Amiable engine is installed from the [immutable local native source commit](https://github.com/Kallone62/llm-council-web/tree/2858cb5089169e985bd7b0d72b022721da454dc7) as `llm-council-core==0.53.0+eng31.1`. It is based on the MIT-licensed upstream 0.53.0 source, with narrow gateway fallback, safety score cap, bias audit, usage accounting, Chairman ranking-heading, rubric schema, holistic JSON safety and explicit ballot semantics fixes; it is not an official Amiable release. See [`NOTICE.md`](NOTICE.md) for attribution details.
+The Amiable engine is installed from the [immutable local native source commit](https://github.com/Kallone62/llm-council-web/tree/868adfe6b9a4183b859dd50957fefdd9977ca1f7) as `llm-council-core==0.53.0+eng31.1.cache1`. It is based on the MIT-licensed upstream 0.53.0 source, with narrow gateway fallback, safety score cap, bias audit, usage accounting, Chairman ranking-heading, rubric schema, holistic JSON safety explicit ballot semantics and runtime response cache fixes; it is not an official Amiable release. See [`NOTICE.md`](NOTICE.md) for attribution details.
 
 ## Version and update policy
 
@@ -373,7 +373,7 @@ This repository intentionally pins an **exact engine release** rather than autom
 
 ```text
 App:    v1.1.0-beta.5
-Engine: llm-council-core==0.53.0+eng31.1
+Engine: llm-council-core==0.53.0+eng31.1.cache1
 ```
 
 If the app proves useful and an upstream update becomes worthwhile, the preferred process is to integrate it manually, retest the web compatibility layer, and publish a new release.
