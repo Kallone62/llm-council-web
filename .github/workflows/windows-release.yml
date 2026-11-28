@@ -12,6 +12,7 @@ on:
       - scripts/windows/assert-smoke-settings.ps1
       - tests/windows/test-smoke-settings.ps1
       - tests/windows/test-smoke-settings-mutation.ps1
+      - tests/windows/test-clean-install.ps1
       - tests/test_storage_integrity.py
       - .github/workflows/windows-release.yml
       - llm_council.yaml
@@ -194,6 +195,10 @@ jobs:
           Set-Content -Path "$zip.sha256" -Value "$sha  $zip" -Encoding ascii
           Write-Host "Release ZIP: $((Get-Item $zip).Length) bytes"
           Write-Host "SHA256: $sha"
+
+      - name: WIN-01 real clean install and negative controls
+        shell: pwsh
+        run: ./tests/windows/test-clean-install.ps1 -PackageZip LLMCouncilWeb-Windows-x64.zip
 
       - name: Attach Windows beta package to workflow
         uses: actions/upload-artifact@v4
